@@ -44,6 +44,14 @@ Rules:
 - Explain specialized terms in their current context when the topic depends on them.
 - If research notes do not support a factual claim, do not include that claim.
 - Put concrete facts you used in facts_used.
+- Use adaptive LinkedIn formatting:
+  - Short/simple topics can be 2 to 3 compact paragraphs.
+  - More complex topics can be 3 to 5 compact paragraphs.
+  - Use blank lines between paragraphs.
+  - Avoid a single long wall of text.
+  - Use bullets only when they make the post easier to scan.
+  - Put relevant hashtags on the final line only when they genuinely fit the post.
+  - Use no more than five hashtags.
 - Use resume data only when relevant.
 - Do not invent names, employers, metrics, sources, or personal claims.
 - Keep the post readable on LinkedIn.
@@ -75,6 +83,8 @@ Review feedback to address:
 Rules:
 - Return the full revised post.
 - Make only the requested post changes.
+- Preserve readable LinkedIn formatting with blank lines between compact paragraphs.
+- Keep hashtags relevant and place them on the final line.
 - Do not include commentary before or after the post."""
 
 POST_REVIEW_SYSTEM_PROMPT = """You review a generated LinkedIn post.
@@ -100,6 +110,13 @@ Resume profile:
 Research notes used for fact checking:
 {research_notes}
 
+Formatting rules:
+- Pass short posts with 2 to 3 compact paragraphs when that is enough.
+- Pass complex posts with 3 to 5 compact paragraphs when needed.
+- Fail posts that are one long wall of text.
+- Fail posts with paragraphs that are too long to scan.
+- Relevant hashtags are allowed, but should be on the final line and capped at five.
+
 If it passes, set passed true. If not, explain exactly what to fix."""
 
 GUARDRAIL_SYSTEM_PROMPT = """You classify whether a user message is a request to edit the current LinkedIn post.
@@ -113,10 +130,10 @@ User message:
 
 Classify the route."""
 
-RESEARCH_SYSTEM_PROMPT = """You turn search results into LinkedIn topic research ideas.
+RESEARCH_SYSTEM_PROMPT = """You turn multi-step web research results into recent technology topic candidates.
 Return only structured data that matches the schema."""
 
-RESEARCH_USER_PROMPT = """Create trending LinkedIn post ideas.
+RESEARCH_USER_PROMPT = """Create recent technology/news topic candidates for LinkedIn.
 
 User context:
 {user_context}
@@ -124,4 +141,12 @@ User context:
 Search results:
 {search_results}
 
-Return concise findings with a suggested post angle for each."""
+Rules:
+- `needs_more_user_details` must be a JSON boolean, not a string.
+- Do not invent source URLs. Use source URLs only from the provided search results.
+- Return concise findings with a suggested post angle for each.
+- Prefer launches, releases, announcements, previews, GA/beta updates, new tools, major version changes, deprecations, acquisitions, roadmap changes, or topics newly becoming discussed now.
+- Each finding must explain what is new or newly relevant in `recency_signal`.
+- Filter out evergreen architecture advice unless a recent source makes it newly relevant.
+- If the sources do not show fresh/recent signals, return fewer findings instead of generic old topics.
+- Prefer specific source-backed topics over broad trend lists."""

@@ -25,8 +25,8 @@ PROVIDER_ENV_KEYS: Final[dict[str, str]] = {
 
 PROVIDER_MODELS: Final[dict[str, list[str]]] = {
     "groq": [
-        "groq/compound",  # TPM: 70K
-        "groq/compound-mini",  # TPM: 70K
+        # "groq/compound",  # TPM: 70K
+        # "groq/compound-mini",  # TPM: 70K
         "openai/gpt-oss-120b",  # TPM: 8K
         "llama-3.3-70b-versatile",  # TPM: 12K
         "qwen/qwen3-32b",  # TPM: 6K
@@ -37,8 +37,8 @@ PROVIDER_MODELS: Final[dict[str, list[str]]] = {
         "llama-3.1-8b-instant",  # TPM: 6K
         "canopylabs/orpheus-v1-english",  # TPM: 1.2K
         "canopylabs/orpheus-arabic-saudi",  # TPM: 1.2K
-        "meta-llama/llama-prompt-guard-2-86m",  # TPM: 15K
-        "meta-llama/llama-prompt-guard-2-22m"  # TPM: 15K
+        # "meta-llama/llama-prompt-guard-2-86m",  # TPM: 15K
+        # "meta-llama/llama-prompt-guard-2-22m"  # TPM: 15K
     ],
     "gemini": [
         "gemini-3.5-flash",
@@ -49,7 +49,7 @@ PROVIDER_MODELS: Final[dict[str, list[str]]] = {
         "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash-lite",
-        "gemini-flash-lite-latest"
+        # "gemini-flash-lite-latest"
     ],
     "claude": [
         # "claude-fable-5",  # Input: $10.00/M | Output: $50.00/M (Frontier reasoning)

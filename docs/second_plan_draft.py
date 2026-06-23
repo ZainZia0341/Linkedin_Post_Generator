@@ -54,11 +54,24 @@ Markdown-style Python docstring so it remains valid Python.
 - `app/storage.py`: local JSON session storage in `schema/local_db`.
 - `app/graph_state.py`, `app/conditional_edges.py`, and `app/nodes/`: LangGraph
   workflow for generation and chat edits.
-- `app/langchain_deep_search.py`: separate research helper for the second card.
+- `app/deep_research_agent.py`: official Deep Agents implementation using
+  `from deepagents import create_deep_agent`, a Tavily search tool, webpage
+  fetching with `httpx`, HTML-to-Markdown conversion with `markdownify`, a
+  research sub-agent, and source-backed final report extraction.
+- `app/langchain_deep_search.py`: research helper for the second card. It now
+  tries the official Deep Agents workflow first when an LLM key and Tavily key
+  are available, then converts the report into the existing `ResearchResults`
+  UI schema. If Deep Agents cannot run, it falls back to the local focused-task
+  planner so the app remains usable. Fallback results are explicitly labeled
+  with `research_engine` and `status_message`.
 - `app/travily_tool.py`: shared Tavily search tool module. It reads
   `TAVILY_API_KEY`, binds `TavilySearch` to the selected chat model for search
   planning, and runs multiple Tavily searches before post generation or allowed
   post edits.
+- `app/post_formatting.py`: adaptive LinkedIn post formatter and formatting
+  validator. It keeps short posts compact, allows longer posts when the topic
+  needs depth, separates paragraphs with blank lines, and keeps relevant
+  hashtags on the final line.
 - `streamlit_ui/app.py`: full Streamlit UI matching the requested sidebar and
   step-by-step main workflow.
 - `test/test_data/`: sample previous post, resume text, and topic.
@@ -106,6 +119,13 @@ not configure Python logging.
 - Empty/no-key LLM fallback path.
 - Empty/no-key Tavily fallback path.
 - Multi-query search planning for niche/current terms.
+- Adaptive formatting checks for wall-of-text posts, overly long paragraphs,
+  and hashtag placement.
+- String boolean coercion for structured outputs from models that return
+  `"false"` instead of `false`.
+- Official Deep Agents availability and fallback behavior.
+- Fallback research output grouping so source snippets do not show as raw
+  findings such as `Tavily answer`.
 - Built-in writing styles.
 - Previous-post style extraction.
 - Resume text extraction.

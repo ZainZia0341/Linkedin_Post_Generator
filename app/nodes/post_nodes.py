@@ -15,6 +15,7 @@ from app.llms.prompts import (
     POST_REVIEW_SYSTEM_PROMPT,
     POST_REVIEW_USER_PROMPT,
 )
+from app.post_formatting import format_linkedin_post, formatting_issues
 from app.travily_tool import run_tavily_post_research
 
 
@@ -127,12 +128,13 @@ def generate_post_node(state: GraphState) -> dict[str, object]:
         ),
         fallback_factory=lambda: _fallback_generated_post(updated_state),
     )
+    formatted_post = format_linkedin_post(generated.post)
     messages = list(state.get("messages", []))
-    if not messages or messages[-1].get("content") != generated.post:
-        messages.append({"role": "assistant", "content": generated.post})
+    if not messages or messages[-1].get("content") != formatted_post:
+        messages.append({"role": "assistant", "content": formatted_post})
     return {
-        "current_post": generated.post,
-        "final_post": generated.post,
+        "current_post": formatted_post,
+        "final_post": formatted_post,
         "attempts": attempts,
         "max_attempts": int(state.get("max_attempts", MAX_REVIEW_ATTEMPTS)),
         "provider": state.get("provider", ""),
@@ -187,11 +189,12 @@ def modify_post_node(state: GraphState) -> dict[str, object]:
         ),
         fallback_factory=lambda: _fallback_modified_post(updated_state),
     )
+    formatted_post = format_linkedin_post(generated.post)
     messages = list(state.get("messages", []))
-    messages.append({"role": "assistant", "content": generated.post})
+    messages.append({"role": "assistant", "content": formatted_post})
     return {
-        "current_post": generated.post,
-        "final_post": generated.post,
+        "current_post": formatted_post,
+        "final_post": formatted_post,
         "attempts": attempts,
         "max_attempts": int(state.get("max_attempts", MAX_REVIEW_ATTEMPTS)),
         "provider": state.get("provider", ""),
@@ -209,6 +212,7 @@ def _fallback_review(state: GraphState) -> PostReview:
         issues.append("Post contains placeholder text.")
     if "http" in post and not state.get("search_results"):
         issues.append("Post includes a source-like URL without search context.")
+    issues.extend(formatting_issues(post))
     if issues:
         return PostReview(
             passed=False,

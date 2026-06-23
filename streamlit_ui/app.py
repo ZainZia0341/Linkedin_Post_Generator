@@ -291,7 +291,11 @@ def _render_chat_step(record: dict[str, Any]) -> None:
 
 
 def _render_research_step(record: dict[str, Any]) -> None:
-    st.subheader("Trending Topic Research")
+    st.subheader("Recent Tech Trend Discovery")
+    st.caption(
+        "Find recent launches, releases, announcements, and newly trending technology topics "
+        "based on the stack keywords in your resume/profile."
+    )
     if not record.get("resume_profile"):
         st.info("No resume profile is saved for this chat. Add a short profile so the research has direction.")
         st.session_state.research_extra_details = st.text_area(
@@ -299,8 +303,8 @@ def _render_research_step(record: dict[str, Any]) -> None:
             value=st.session_state.research_extra_details,
             height=160,
         )
-    if st.button("Run deep research", use_container_width=True):
-        with st.spinner("Researching topic ideas..."):
+    if st.button("Run recent trend research", use_container_width=True):
+        with st.spinner("Searching recent technology news and launches..."):
             results = research_trending_topics(
                 resume_profile=record.get("resume_profile"),
                 llm_config=_config(),
@@ -315,9 +319,14 @@ def _render_research_step(record: dict[str, Any]) -> None:
     if results:
         if results.get("needs_more_user_details"):
             st.warning("Add profile details before running research.")
+        if results.get("status_message"):
+            engine = results.get("research_engine") or "research"
+            st.info(f"{engine}: {results['status_message']}")
         for finding in results.get("findings", []):
             st.markdown(f"### {finding.get('title', 'Untitled')}")
             st.write(finding.get("summary", ""))
+            if finding.get("recency_signal"):
+                st.write(f"Recent signal: {finding.get('recency_signal', '')}")
             st.write(f"Why it matters: {finding.get('why_it_matters', '')}")
             st.write(f"Post angle: {finding.get('suggested_post_angle', '')}")
             if finding.get("source_url"):

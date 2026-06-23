@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(value)
 
 
 class WritingStyle(BaseModel):
@@ -48,10 +56,15 @@ class GeneratedPost(BaseModel):
 
 
 class PostReview(BaseModel):
-    passed: bool = False
+    passed: bool | str = False
     feedback: str = ""
     issues: list[str] = Field(default_factory=list)
     revised_prompt_hint: str = ""
+
+    @field_validator("passed", mode="before")
+    @classmethod
+    def normalize_passed(cls, value: object) -> bool:
+        return _coerce_bool(value)
 
 
 class ResearchFinding(BaseModel):
@@ -60,14 +73,38 @@ class ResearchFinding(BaseModel):
     why_it_matters: str = ""
     suggested_post_angle: str = ""
     source_url: str = ""
+    recency_signal: str = ""
+
+
+class ResearchTask(BaseModel):
+    title: str
+    query: str
+    reason: str = ""
+
+
+class ResearchPlan(BaseModel):
+    needs_more_user_details: bool | str = False
+    tasks: list[ResearchTask] = Field(default_factory=list)
+
+    @field_validator("needs_more_user_details", mode="before")
+    @classmethod
+    def normalize_needs_more_user_details(cls, value: object) -> bool:
+        return _coerce_bool(value)
 
 
 class ResearchResults(BaseModel):
-    needs_more_user_details: bool = False
+    needs_more_user_details: bool | str = False
     query_used: str = ""
     findings: list[ResearchFinding] = Field(default_factory=list)
     provider: str = ""
     model: str = ""
+    research_engine: str = ""
+    status_message: str = ""
+
+    @field_validator("needs_more_user_details", mode="before")
+    @classmethod
+    def normalize_needs_more_user_details(cls, value: object) -> bool:
+        return _coerce_bool(value)
 
 
 class ApiKeyCheck(BaseModel):

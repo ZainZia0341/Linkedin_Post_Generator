@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -57,14 +57,19 @@ def get_tavily_api_key() -> str:
     return api_key
 
 
-def build_tavily_search_tool(max_results: int = DEFAULT_RESULTS_PER_QUERY):
+def build_tavily_search_tool(
+    max_results: int = DEFAULT_RESULTS_PER_QUERY,
+    search_topic: Literal["general", "news", "finance"] = "general",
+    time_range: Literal["day", "week", "month", "year"] | None = None,
+):
     from langchain_tavily import TavilySearch
 
     get_tavily_api_key()
     return TavilySearch(
         max_results=max_results,
         search_depth="advanced",
-        topic="general",
+        topic=search_topic,
+        time_range=time_range,
         include_answer=True,
     )
 
@@ -93,6 +98,7 @@ def _normalize_tavily_result(raw_result: Any, query: str) -> list[dict[str, str]
                         "title": str(item.get("title", "Untitled")),
                         "content": str(item.get("content", item.get("summary", ""))),
                         "url": str(item.get("url", "")),
+                        "published_date": str(item.get("published_date", item.get("date", ""))),
                     }
                 )
         return normalized
@@ -110,6 +116,7 @@ def _normalize_tavily_result(raw_result: Any, query: str) -> list[dict[str, str]
                         "title": str(item.get("title", "Untitled")),
                         "content": str(item.get("content", item.get("summary", ""))),
                         "url": str(item.get("url", "")),
+                        "published_date": str(item.get("published_date", item.get("date", ""))),
                     }
                 )
         return normalized
@@ -262,8 +269,15 @@ def run_tavily_post_research(
     user_message: str = "",
     count: int = DEFAULT_POST_SEARCH_COUNT,
     results_per_query: int = DEFAULT_RESULTS_PER_QUERY,
+    search_topic: Literal["general", "news", "finance"] = "general",
+    time_range: Literal["day", "week", "month", "year"] | None = None,
+    use_exact_query: bool = False,
 ) -> list[dict[str, str]]:
-    fallback_queries = build_post_search_queries(topic, user_message, count)
+    fallback_queries = (
+        _dedupe_queries([topic], count)
+        if use_exact_query
+        else build_post_search_queries(topic, user_message, count)
+    )
     api_key = get_tavily_api_key()
     if not api_key:
         print("Tavily post research skipped: no TAVILY_API_KEY was found.")
@@ -278,7 +292,11 @@ def run_tavily_post_research(
         ]
 
     try:
-        tool = build_tavily_search_tool(max_results=results_per_query)
+        tool = build_tavily_search_tool(
+            max_results=results_per_query,
+            search_topic=search_topic,
+            time_range=time_range,
+        )
         planned_queries = (
             _tool_call_queries(llm_config, tool, topic, user_message, count)
             if llm_config is not None
@@ -328,4 +346,21 @@ def search_web(query: str, max_results: int = TAVILY_SEARCH_RESULTS) -> list[dic
         user_message="",
         count=1,
         results_per_query=max_results,
+    )
+
+
+def search_recent_web(
+    query: str,
+    max_results: int = TAVILY_SEARCH_RESULTS,
+    time_range: Literal["day", "week", "month", "year"] = "month",
+) -> list[dict[str, str]]:
+    return run_tavily_post_research(
+        topic=query,
+        llm_config=None,
+        user_message="",
+        count=1,
+        results_per_query=max_results,
+        search_topic="news",
+        time_range=time_range,
+        use_exact_query=True,
     )

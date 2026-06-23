@@ -1,0 +1,9 @@
+.env
+example.env
+.venv
+__pycache__/
+*.pyc
+schema/local_db/
+.git/
+.codex/
+test/
