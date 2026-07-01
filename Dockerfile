@@ -4,8 +4,8 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
-ENV STREAMLIT_SERVER_PORT=7860
+ENV API_HOST=0.0.0.0
+ENV API_PORT=7860
 
 RUN pip install --no-cache-dir uv
 
@@ -16,5 +16,4 @@ COPY . .
 
 EXPOSE 7860
 
-CMD ["uv", "run", "streamlit", "run", "streamlit_ui/app.py", "--server.address=0.0.0.0", "--server.port=7860"]
-
+CMD ["uv", "run", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "7860"]

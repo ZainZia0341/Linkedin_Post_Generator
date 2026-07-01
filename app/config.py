@@ -36,6 +36,12 @@ PLAYWRIGHT_LOCAL_DIR: Final[Path] = LOCAL_DB_DIR / "playwright"
 DEFAULT_MAX_MESSAGES: Final[int] = int(os.getenv("MAX_CHAT_MESSAGES", "10"))
 MAX_REVIEW_ATTEMPTS: Final[int] = int(os.getenv("MAX_REVIEW_ATTEMPTS", "3"))
 TAVILY_SEARCH_RESULTS: Final[int] = int(os.getenv("TAVILY_SEARCH_RESULTS", "5"))
+API_LIST_LIMIT: Final[int] = int(_env_value("API_LIST_LIMIT", "10"))
+SCRAPE_MAX_WORKERS: Final[int] = int(_env_value("SCRAPE_MAX_WORKERS", "2"))
+
+DYNAMODB_ENDPOINT_URL: Final[str] = _env_value("DYNAMODB_ENDPOINT_URL", "http://localhost:8000")
+DYNAMODB_REGION_NAME: Final[str] = _env_value("AWS_DEFAULT_REGION", "us-west-2")
+DYNAMODB_TABLE_PREFIX: Final[str] = _env_value("DYNAMODB_TABLE_PREFIX", "linkedin_post_generator")
 
 LINKEDIN_DEFAULT_TRACK_URL: Final[str] = _env_value(
     "LINKEDIN_DEFAULT_TRACK_URL",
@@ -46,7 +52,7 @@ LINKEDIN_HEADLESS: Final[bool] = _env_value("LINKEDIN_HEADLESS", "true").lower()
 LINKEDIN_CHECK_MAX_POSTS: Final[int] = int(_env_value("LINKEDIN_CHECK_MAX_POSTS", "5"))
 LINKEDIN_BROWSER_PROFILE_DIR: Final[Path] = PLAYWRIGHT_LOCAL_DIR / "linkedin_burner_profile"
 
-DEFAULT_PROVIDER: Final[str] = os.getenv("DEFAULT_LLM_PROVIDER", "groq")
+DEFAULT_PROVIDER: Final[str] = _env_value("DEFAULT_LLM_PROVIDER", "groq")
 
 PROVIDER_ENV_KEYS: Final[dict[str, str]] = {
     "groq": "GROQ_API_KEY",
@@ -94,6 +100,11 @@ PROVIDER_MODELS: Final[dict[str, list[str]]] = {
         "claude-haiku-4.5",  # Input: $1.00/M | Output: $5.00/M (High-speed latency tier)
     ],
 }
+
+DEFAULT_MODEL: Final[str] = _env_value(
+    "DEFAULT_LLM_MODEL",
+    PROVIDER_MODELS.get(DEFAULT_PROVIDER, [""])[0],
+)
 
 BUILTIN_WRITING_STYLES: Final[dict[str, dict[str, object]]] = {
     "Clear Builder": {

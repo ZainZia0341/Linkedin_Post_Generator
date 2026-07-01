@@ -1,7 +1,11 @@
 def main():
-    print("LinkedIn Post Generator")
-    print("Run the Streamlit app with:")
-    print("uv run streamlit run streamlit_ui/app.py")
+    print("LinkedIn Post Generator API")
+    print("Run DynamoDB Local first:")
+    print("docker compose -f docker-compose.dynamodb.yml up -d")
+    print("Run the FastAPI app with:")
+    print("uv run uvicorn app.api.main:app --reload --port 7860")
+    print("Open API docs at:")
+    print("http://localhost:7860/docs")
 
 
 if __name__ == "__main__":

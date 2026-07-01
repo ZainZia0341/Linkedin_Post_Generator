@@ -1,0 +1,34 @@
+[
+  {
+    "user_id": "test-user-1",
+    "profile": {
+      "full_name": "Zain Zia",
+      "headline": "Artificial Intelligence Engineer",
+      "location": "Karachi, Pakistan",
+      "skills": ["Python", "LangChain", "FastAPI", "AWS", "DynamoDB"],
+      "industries": ["AI", "software engineering"],
+      "experience_summary": "Builds AI applications, backend APIs, and content automation workflows."
+    },
+    "writing_style": {
+      "name": "Clear Builder",
+      "summary": "Practical, concise, and lesson-driven.",
+      "tone": "helpful, grounded, professional"
+    }
+  },
+  {
+    "user_id": "test-user-2",
+    "profile": {
+      "full_name": "Mughees Khan",
+      "headline": "Backend and AI Workflow Builder",
+      "location": "Pakistan",
+      "skills": ["Python", "Streamlit", "FastAPI", "Playwright", "LinkedIn content"],
+      "industries": ["developer tools", "AI automation"],
+      "experience_summary": "Experiments with practical AI tools for research, writing, and productivity."
+    },
+    "writing_style": {
+      "name": "Story Driven",
+      "summary": "Narrative style with a concrete moment, reflection, and human lesson.",
+      "tone": "warm, reflective, honest"
+    }
+  }
+]

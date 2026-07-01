@@ -94,3 +94,7 @@ Add concrete examples
 30-delete post or thread endpoint
 31-Point 15 runs multiple parallel Playwright scrapes — that's inherently a background/long-running job. You'll likely want a job-status endpoint (started/running/done/failed) rather than expecting the scrape to finish synchronously within one request/response cycle. NOTE currently we will wait for the endpoint to end to see how its work later we will do that for now do not do backgrounad thing as currently we do not have any time out thing think error in develeopment
 32-Endpoints returning lists (all posts, all creators, all activities, all users) will need limit/offset or cursor params eventually — worth designing for now even if unused in testing phase. NOTE limit the return list to say 10 for now but it will be dynamic we can adjust that limit from .env or config file
+33-when llm is used in any api return the provider or model used
+34-add the test things in test folder remove streamlit file but do not remove docker thing just update like we might upload our fastapi app on huggingface instead of stremalit just fastapi with docker
+35-install the dynamodb local with docker i thing give path of this dir of app mean i shoudl be able to see the folder in repo named dynamodb_localdb
+

@@ -4,6 +4,7 @@ example.env
 __pycache__/
 *.pyc
 schema/local_db/
+dynamodb_localdb/
 .git/
 .codex/
 test/

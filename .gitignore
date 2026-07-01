@@ -4,6 +4,8 @@ schema/local_db/*.json
 schema/local_db/sessions/
 schema/local_db/tracked_profiles/
 schema/local_db/playwright/
+dynamodb_localdb/*
+!dynamodb_localdb/.gitkeep
 .venv/
 __pycache__/
 *.pyc
