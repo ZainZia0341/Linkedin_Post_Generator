@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import app.creator_tracking as creator_tracking
 import app.langchain_deep_search as deep_search
+import app.linkedin_playwright_scraper as linkedin_scraper
+import app.user_profile as user_profile
 from app.deep_research_agent import (
     DeepResearchReport,
     DeepResearchUnavailable,
@@ -73,6 +76,112 @@ def test_local_storage_lifecycle(tmp_path, monkeypatch) -> None:
 
     sessions = storage.list_sessions()
     assert sessions[0]["chat_name"] == "chat1"
+
+
+def test_global_user_profile_lifecycle(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(user_profile, "USER_PROFILE_PATH", tmp_path / "user_profile.json")
+
+    assert user_profile.has_saved_writing_style() is False
+    profile = user_profile.update_writing_style(
+        {"name": "Builder", "summary": "Clear lessons.", "tone": "practical"},
+        source="builtin",
+    )
+    assert profile["writing_style"]["name"] == "Builder"
+    assert user_profile.has_saved_writing_style() is True
+
+    user_profile.update_resume_profile(
+        {"full_name": "Mughees Khan", "headline": "AI engineer", "skills": ["Python"]},
+        source="text",
+    )
+    style, resume_profile = user_profile.get_generation_profile()
+    assert style["name"] == "Builder"
+    assert resume_profile["full_name"] == "Mughees Khan"
+    assert user_profile.has_saved_resume_profile() is True
+
+    user_profile.update_resume_profile({}, source="skipped", skipped=True)
+    assert user_profile.resume_was_skipped() is True
+    user_profile.reset_user_profile()
+    assert not (tmp_path / "user_profile.json").exists()
+
+
+def test_creator_tracking_storage_lifecycle(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(creator_tracking, "TRACKED_PROFILE_DIR", tmp_path / "tracked_profiles")
+    monkeypatch.setattr(creator_tracking, "TRACKED_PROFILE_INDEX_PATH", tmp_path / "tracked_profiles" / "index.json")
+
+    def fake_fetch_recent_profile_posts(profile_url: str, max_posts: int = 5):
+        return [
+            {
+                "post_id": "urn:li:activity:123456789",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:123456789/",
+                "raw_text": "A creator post about AI product strategy and practical builder workflows.",
+                "author_name": "Example Creator",
+                "posted_at_text": "1d",
+                "source": "playwright",
+            }
+        ]
+
+    monkeypatch.setattr(creator_tracking, "fetch_recent_profile_posts", fake_fetch_recent_profile_posts)
+
+    profile = creator_tracking.add_tracked_profile("linkedin.com/in/example-creator/?tracking=1")
+    assert profile["profile_id"] == "example-creator"
+    assert profile["profile_url"] == "https://www.linkedin.com/in/example-creator/"
+
+    new_posts = creator_tracking.check_for_new_posts(profile["profile_id"])
+    assert len(new_posts) == 1
+    assert creator_tracking.check_for_new_posts(profile["profile_id"]) == []
+
+    unused_posts = creator_tracking.list_unused_posts(profile["profile_id"])
+    assert len(unused_posts) == 1
+    creator_tracking.mark_post_used(profile["profile_id"], unused_posts[0]["post_id"])
+
+    updated = creator_tracking.load_tracked_profile(profile["profile_id"])
+    assert updated["seen_count"] == 1
+    assert updated["used_count"] == 1
+    assert updated["unused_count"] == 0
+
+
+def test_creator_tracking_records_scraper_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(creator_tracking, "TRACKED_PROFILE_DIR", tmp_path / "tracked_profiles")
+    monkeypatch.setattr(creator_tracking, "TRACKED_PROFILE_INDEX_PATH", tmp_path / "tracked_profiles" / "index.json")
+    monkeypatch.setattr(
+        creator_tracking,
+        "fetch_recent_profile_posts",
+        lambda profile_url, max_posts=5: [{"error": "LinkedIn hid recent activity behind a login wall."}],
+    )
+
+    profile = creator_tracking.add_tracked_profile("https://www.linkedin.com/in/error-case/")
+    assert creator_tracking.check_for_new_posts(profile["profile_id"]) == []
+    updated = creator_tracking.load_tracked_profile(profile["profile_id"])
+    assert "login wall" in updated["last_error"]
+
+
+def test_creator_tracking_prefers_scraper_user_message(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(creator_tracking, "TRACKED_PROFILE_DIR", tmp_path / "tracked_profiles")
+    monkeypatch.setattr(creator_tracking, "TRACKED_PROFILE_INDEX_PATH", tmp_path / "tracked_profiles" / "index.json")
+    monkeypatch.setattr(
+        creator_tracking,
+        "fetch_recent_profile_posts",
+        lambda profile_url, max_posts=5: [
+            {
+                "error": "session_expired_or_challenged",
+                "message": "Re-run scripts/bootstrap_linkedin_session.py to log in manually.",
+            }
+        ],
+    )
+
+    profile = creator_tracking.add_tracked_profile("https://www.linkedin.com/in/challenge-case/")
+    assert creator_tracking.check_for_new_posts(profile["profile_id"]) == []
+    updated = creator_tracking.load_tracked_profile(profile["profile_id"])
+    assert updated["last_error"] == "Re-run scripts/bootstrap_linkedin_session.py to log in manually."
+
+
+def test_burner_mode_requires_manual_bootstrap(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(linkedin_scraper, "LINKEDIN_AUTOMATION_MODE", "burner")
+    monkeypatch.setattr(linkedin_scraper, "LINKEDIN_BROWSER_PROFILE_DIR", tmp_path / "missing_profile")
+
+    result = linkedin_scraper.fetch_recent_profile_posts("https://www.linkedin.com/in/theburningmonk/")
+    assert result[0]["error"] == "burner_session_not_found"
+    assert "bootstrap_linkedin_session.py" in result[0]["message"]
 
 
 def test_generation_graph_offline() -> None:

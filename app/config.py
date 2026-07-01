@@ -5,15 +5,46 @@ from pathlib import Path
 from typing import Final
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+
+
+def _read_dotenv_value(key: str) -> str:
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return ""
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or not stripped.startswith(f"{key}="):
+            continue
+        raw_value = stripped.split("=", 1)[1].strip()
+        return raw_value.strip().strip('"').strip("'")
+    return ""
+
+
+def _env_value(key: str, default: str = "") -> str:
+    return os.getenv(key, "").strip() or _read_dotenv_value(key) or default
+
 LOCAL_DB_DIR: Final[Path] = Path(
     os.getenv("LOCAL_DB_DIR", str(PROJECT_ROOT / "schema" / "local_db"))
 )
 SESSION_DIR: Final[Path] = LOCAL_DB_DIR / "sessions"
 SESSION_INDEX_PATH: Final[Path] = LOCAL_DB_DIR / "sessions_index.json"
+USER_PROFILE_PATH: Final[Path] = LOCAL_DB_DIR / "user_profile.json"
+TRACKED_PROFILE_DIR: Final[Path] = LOCAL_DB_DIR / "tracked_profiles"
+TRACKED_PROFILE_INDEX_PATH: Final[Path] = TRACKED_PROFILE_DIR / "index.json"
+PLAYWRIGHT_LOCAL_DIR: Final[Path] = LOCAL_DB_DIR / "playwright"
 
 DEFAULT_MAX_MESSAGES: Final[int] = int(os.getenv("MAX_CHAT_MESSAGES", "10"))
 MAX_REVIEW_ATTEMPTS: Final[int] = int(os.getenv("MAX_REVIEW_ATTEMPTS", "3"))
 TAVILY_SEARCH_RESULTS: Final[int] = int(os.getenv("TAVILY_SEARCH_RESULTS", "5"))
+
+LINKEDIN_DEFAULT_TRACK_URL: Final[str] = _env_value(
+    "LINKEDIN_DEFAULT_TRACK_URL",
+    "https://www.linkedin.com/in/theburningmonk/",
+)
+LINKEDIN_AUTOMATION_MODE: Final[str] = _env_value("LINKEDIN_AUTOMATION_MODE", "logged_out")
+LINKEDIN_HEADLESS: Final[bool] = _env_value("LINKEDIN_HEADLESS", "true").lower() == "true"
+LINKEDIN_CHECK_MAX_POSTS: Final[int] = int(_env_value("LINKEDIN_CHECK_MAX_POSTS", "5"))
+LINKEDIN_BROWSER_PROFILE_DIR: Final[Path] = PLAYWRIGHT_LOCAL_DIR / "linkedin_burner_profile"
 
 DEFAULT_PROVIDER: Final[str] = os.getenv("DEFAULT_LLM_PROVIDER", "groq")
 
@@ -106,8 +137,12 @@ BUILTIN_WRITING_STYLES: Final[dict[str, dict[str, object]]] = {
 
 def ensure_local_db() -> None:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    TRACKED_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    PLAYWRIGHT_LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     if not SESSION_INDEX_PATH.exists():
         SESSION_INDEX_PATH.write_text("[]\n", encoding="utf-8")
+    if not TRACKED_PROFILE_INDEX_PATH.exists():
+        TRACKED_PROFILE_INDEX_PATH.write_text('{"profiles": []}\n', encoding="utf-8")
 
 
 def get_models_for_provider(provider: str) -> list[str]:
