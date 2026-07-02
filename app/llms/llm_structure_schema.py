@@ -55,6 +55,11 @@ class GeneratedPost(BaseModel):
     model: str = ""
 
 
+class GeneratedComment(BaseModel):
+    comment: str
+    rationale: str = ""
+
+
 class PostReview(BaseModel):
     passed: bool | str = False
     feedback: str = ""

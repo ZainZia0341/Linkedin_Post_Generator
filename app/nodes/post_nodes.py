@@ -80,22 +80,46 @@ def _fallback_generated_post(state: GraphState) -> GeneratedPost:
     topic = state.get("topic", "this topic").strip() or "this topic"
     style = state.get("writing_style") or {}
     resume = state.get("resume_profile") or {}
+    generation_style = state.get("generation_style", "Create a post about a topic")
     tone = style.get("tone", "clear and practical") if isinstance(style, dict) else "clear and practical"
     name = resume.get("full_name", "") if isinstance(resume, dict) else ""
     opener = f"I have been thinking about {topic}."
     if name:
         opener = f"As {name}, I have been thinking about {topic}."
 
-    post = (
-        f"{opener}\n\n"
-        f"The useful part is not just the idea itself. It is how we turn it into a repeatable habit.\n\n"
-        f"Three things stand out:\n"
-        f"1. Start with the real problem, not the tool.\n"
-        f"2. Keep the workflow simple enough to use when work gets busy.\n"
-        f"3. Review the output before sharing it with people who trust you.\n\n"
-        f"That is the difference between experimenting with {topic} and actually getting value from it.\n\n"
-        "What would you add?"
-    )
+    if "mistakes" in generation_style.lower():
+        post = (
+            f"{opener}\n\n"
+            "The mistakes I see most often:\n"
+            "1. Starting with the tool before defining the problem.\n"
+            "2. Sharing vague claims without a concrete example.\n"
+            "3. Skipping the review step before people see the work.\n\n"
+            f"Fix those three and {topic} becomes much easier to trust.\n\n"
+            "Which one shows up most often?"
+        )
+    elif "do's and don'ts" in generation_style.lower():
+        post = (
+            f"{opener}\n\n"
+            "Don't:\n"
+            "- Chase the trend without understanding the use case.\n"
+            "- Turn the post into a list of buzzwords.\n\n"
+            "Do:\n"
+            "- Explain the practical problem.\n"
+            "- Give one example a reader can remember.\n\n"
+            f"That is how {topic} becomes useful instead of just noisy.\n\n"
+            "What would you add?"
+        )
+    else:
+        post = (
+            f"{opener}\n\n"
+            "The useful part is not just the idea itself. It is how we turn it into a repeatable habit.\n\n"
+            "Three things stand out:\n"
+            "1. Start with the real problem, not the tool.\n"
+            "2. Keep the workflow simple enough to use when work gets busy.\n"
+            "3. Review the output before sharing it with people who trust you.\n\n"
+            f"That is the difference between experimenting with {topic} and actually getting value from it.\n\n"
+            "What would you add?"
+        )
     return GeneratedPost(
         post=post,
         facts_used=[
@@ -124,6 +148,7 @@ def generate_post_node(state: GraphState) -> dict[str, object]:
             writing_style=_json(state.get("writing_style")),
             resume_profile=_json(state.get("resume_profile")),
             research_notes=_research_notes(state),
+            generation_instructions=state.get("generation_instructions", ""),
             review_feedback=state.get("review_feedback", ""),
         ),
         fallback_factory=lambda: _fallback_generated_post(updated_state),

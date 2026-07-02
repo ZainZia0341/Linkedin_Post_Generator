@@ -10,11 +10,15 @@ from app.api.schemas import (
     ApiKeyTestResponse,
     BrainstormRequest,
     BrainstormResponse,
+    CommentResponse,
+    CommentedActivityResponse,
     CreatorCreateRequest,
     CreatorResponse,
     DeleteResponse,
+    GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
+    MarkCommentedRequest,
     ModifyPostRequest,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
@@ -26,13 +30,18 @@ from app.api.schemas import (
     UserUpdateRequest,
 )
 from app.api.services import (
+    COMMENT_TOPICS,
+    POST_CREATION_ACTIONS,
     SAVED_ACTIONS,
     brainstorm,
     create_creator,
     create_user,
+    generate_comment,
     generate_from_activity,
     generate_post,
+    list_commented_activities,
     list_all_activities,
+    mark_activity_commented,
     modify_post,
     seed_default_users,
     thread_response,
@@ -78,6 +87,16 @@ def health() -> dict[str, str]:
 @app.get("/actions", response_model=list[str])
 def list_saved_actions() -> list[str]:
     return SAVED_ACTIONS
+
+
+@app.get("/post-generation-styles", response_model=list[str])
+def list_post_generation_styles() -> list[str]:
+    return POST_CREATION_ACTIONS
+
+
+@app.get("/comments/topics", response_model=list[str])
+def list_comment_topics() -> list[str]:
+    return COMMENT_TOPICS
 
 
 @app.get("/llms/providers")
@@ -180,6 +199,28 @@ def generate_from_creator_activity_endpoint(
 ) -> ThreadResponse:
     try:
         return generate_from_activity(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/comments/generate", response_model=CommentResponse)
+def generate_comment_endpoint(
+    payload: GenerateCommentRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CommentResponse:
+    try:
+        return generate_comment(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.patch("/comments/mark", response_model=CommentResponse)
+def mark_comment_endpoint(
+    payload: MarkCommentedRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CommentResponse:
+    try:
+        return mark_activity_commented(repo, payload)
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -297,3 +338,12 @@ def list_user_activities(
     limit: int = Query(default=API_LIST_LIMIT, ge=1, le=100),
 ) -> list[ActivityResponse]:
     return list_all_activities(repo, user_id, limit)
+
+
+@app.get("/users/{user_id}/engagements/comments", response_model=list[CommentedActivityResponse])
+def list_user_commented_activities(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    limit: int = Query(default=10, ge=1, le=100),
+) -> list[CommentedActivityResponse]:
+    return list_commented_activities(repo, user_id, limit)

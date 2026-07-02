@@ -7,6 +7,8 @@ class GraphState(TypedDict, total=False):
     workflow_mode: Literal["generate", "chat"]
     topic: str
     writing_style: dict[str, Any]
+    generation_style: str
+    generation_instructions: str
     resume_profile: dict[str, Any]
     current_post: str
     final_post: str

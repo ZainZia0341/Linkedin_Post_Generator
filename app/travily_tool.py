@@ -19,6 +19,10 @@ _GENERIC_QUERY_WORDS = {
     "better",
     "coding",
     "current",
+    "create",
+    "created",
+    "generate",
+    "generated",
     "especially",
     "examples",
     "facts",
@@ -28,10 +32,14 @@ _GENERIC_QUERY_WORDS = {
     "post",
     "practical",
     "recent",
+    "return",
     "software",
     "tool",
+    "topic",
     "usage",
     "with",
+    "write",
+    "writing",
 }
 
 
@@ -132,22 +140,33 @@ def build_post_search_queries(
     base_text = " ".join(part.strip() for part in (topic, user_message) if part.strip())
     base_text = base_text or "LinkedIn post topic"
     collapsed = re.sub(r"\s+", " ", base_text).strip()
-    context = "LLM coding software development" if re.search(r"\b(llm|coding|code)\b", collapsed, re.I) else "software development"
+    core_topic = _clean_topic_for_search(collapsed)
+    context = context_hint(core_topic)
 
-    focused_terms = _extract_focused_terms(collapsed)
-    queries = [f"{collapsed} meaning current usage"]
+    focused_terms = _extract_focused_terms(core_topic)
+    queries = [f"{core_topic} meaning current usage"]
+    if context:
+        queries.append(f"{core_topic} latest examples in {context}")
+    else:
+        queries.append(f"{core_topic} latest examples")
+    queries.append(f"{core_topic} announcement release current context")
     for term in focused_terms:
-        queries.append(f"{term} meaning current usage in {context}")
-        queries.append(f"{term} latest examples in {context}")
+        queries.append(f"{term} meaning current usage{f' in {context}' if context else ''}")
+        queries.append(f"{term} latest examples{f' in {context}' if context else ''}")
 
-    queries.extend(
-        [
-            f"{collapsed} latest examples explanation",
-            f"{collapsed} practical use in {context}",
-            f"{collapsed} best practices facts",
-        ]
-    )
+    queries.append(f"{core_topic} practical explanation")
     return _dedupe_queries(queries, count)
+
+
+def _clean_topic_for_search(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = re.sub(
+        r"(?i)^\s*(create|generate|write|make)\s+(a\s+)?(linkedin\s+)?post\s+(on|about|for)\s+",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)^\s*(create|generate|write|make)\s+posts?\s+from\s+scratch\s+(on|about|for)?\s*", "", cleaned)
+    return cleaned.strip(" .,:;") or "LinkedIn post topic"
 
 
 def _extract_focused_terms(text: str) -> list[str]:
@@ -158,6 +177,8 @@ def _extract_focused_terms(text: str) -> list[str]:
         terms.append("caveman prompt LLM coding")
     if re.search(r"\brtk\b", lower_text):
         terms.append("RTK tool coding Redux Toolkit")
+    if re.search(r"\bclaude\b", lower_text):
+        terms.append("Claude AI model")
 
     acronym_tokens = re.findall(r"\b[A-Za-z]{2,6}\b", text)
     for token in acronym_tokens:
@@ -174,7 +195,8 @@ def _extract_focused_terms(text: str) -> list[str]:
             continue
         if lower_word in {"llm", "rtk"}:
             continue
-        terms.append(f"{word} {context_hint(text)}")
+        hint = context_hint(text)
+        terms.append(f"{word} {hint}".strip())
         if len(terms) >= 4:
             break
 
@@ -184,7 +206,11 @@ def _extract_focused_terms(text: str) -> list[str]:
 def context_hint(text: str) -> str:
     if re.search(r"\b(llm|prompt|coding|code)\b", text, re.I):
         return "LLM coding"
-    return "software development"
+    if re.search(r"\b(claude|gemini|gpt|ai model|anthropic|openai)\b", text, re.I):
+        return "AI models"
+    if re.search(r"\b(api|framework|library|python|javascript|typescript|backend|frontend|database|deploy)\b", text, re.I):
+        return "software development"
+    return ""
 
 
 def _dedupe_terms(terms: list[str], limit: int) -> list[str]:

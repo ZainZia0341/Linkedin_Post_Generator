@@ -38,31 +38,36 @@ class UserResponse(BaseModel):
 
 
 class GeneratePostRequest(BaseModel):
-    user_id: str
-    idea: str
-    generation_style: str | dict[str, Any] | None = None
-    topic_source: str = "manual"
-    provider: str | None = None
-    model: str | None = None
-    api_key: str | None = None
+    user_id: str = Field(examples=["test-user-1"])
+    idea: str = Field(
+        description="The topic or instruction to create the LinkedIn post about.",
+        examples=["Create a post on Claude Fable 5 return"],
+    )
+    generation_style: str = Field(
+        default="Create a post about a topic",
+        description=(
+            "Post creation template to use. Examples: Create posts from scratch, "
+            "Create a controversial post about a topic, Create a top mistakes post about a topic."
+        ),
+        examples=["Create a post about a topic"],
+    )
+    topic_source: str = Field(
+        default="manual",
+        description="Tracking metadata for where the idea came from, such as manual, brainstorm, or creator_activity.",
+        examples=["manual"],
+    )
 
 
 class GenerateFromActivityRequest(BaseModel):
     user_id: str
     creator_id: str
     post_id: str
-    provider: str | None = None
-    model: str | None = None
-    api_key: str | None = None
 
 
 class ModifyPostRequest(BaseModel):
     user_id: str
     thread_id: str
     modification_message: str
-    provider: str | None = None
-    model: str | None = None
-    api_key: str | None = None
 
 
 class ThreadResponse(BaseModel):
@@ -75,6 +80,7 @@ class ThreadResponse(BaseModel):
     model: str = ""
     topic: str = ""
     topic_source: str = ""
+    generation_style: str = ""
     source: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
@@ -87,6 +93,7 @@ class ThreadSummary(BaseModel):
     thread_id: str
     topic: str = ""
     topic_source: str = ""
+    generation_style: str = ""
     created_at: str
     updated_at: str
 
@@ -95,9 +102,6 @@ class BrainstormRequest(BaseModel):
     user_id: str
     topic: str | None = None
     action: str = "Brainstorm post topics"
-    provider: str | None = None
-    model: str | None = None
-    api_key: str | None = None
 
 
 class BrainstormResponse(BaseModel):
@@ -145,6 +149,7 @@ class ActivityResponse(BaseModel):
     content_hash: str
     source: str = "playwright"
     is_new: bool = False
+    engagement: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScrapeCreatorsResponse(BaseModel):
@@ -164,3 +169,40 @@ class UserDataResponse(BaseModel):
 class DeleteResponse(BaseModel):
     ok: bool
     message: str
+
+
+class GenerateCommentRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    creator_id: str = Field(examples=["shubhamsaboo"])
+    post_id: str = Field(examples=["urn:li:activity:7478273041442033664"])
+    comment_topic: str = Field(
+        default="Add Value",
+        description="Comment angle to generate.",
+        examples=["Add Value"],
+    )
+
+
+class CommentResponse(BaseModel):
+    user_id: str
+    creator_id: str
+    post_id: str
+    comment_topic: str
+    comment: str
+    provider: str = ""
+    model: str = ""
+    generated_at: str = ""
+    commented: bool = False
+
+
+class MarkCommentedRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    creator_id: str = Field(examples=["shubhamsaboo"])
+    post_id: str = Field(examples=["urn:li:activity:7478273041442033664"])
+    commented: bool = Field(default=True, description="Whether this saved creator post has been commented on.")
+    comment_text: str | None = Field(default=None, description="Optional final comment text that was actually posted.")
+
+
+class CommentedActivityResponse(ActivityResponse):
+    comment_topic: str = ""
+    comment: str = ""
+    commented_at: str = ""

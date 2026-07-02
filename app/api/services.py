@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 import hashlib
+import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -10,9 +12,13 @@ from app.api.schemas import (
     ActivityResponse,
     BrainstormRequest,
     BrainstormResponse,
+    CommentResponse,
+    CommentedActivityResponse,
     CreatorResponse,
+    GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
+    MarkCommentedRequest,
     ModifyPostRequest,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
@@ -24,6 +30,7 @@ from app.config import (
     API_LIST_LIMIT,
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
+    LINKEDIN_AUTOMATION_MODE,
     MAX_REVIEW_ATTEMPTS,
     PROVIDER_MODELS,
     SCRAPE_MAX_WORKERS,
@@ -33,9 +40,20 @@ from app.db.dynamodb import DynamoRepository
 from app.graph_state import run_post_chat_edit, run_post_generation
 from app.langchain_deep_search import research_trending_topics
 from app.linkedin_playwright_scraper import fetch_recent_profile_posts
-from app.llms.llm import LLMConfig
+from app.llms.llm import LLMConfig, invoke_structured
+from app.llms.llm_structure_schema import GeneratedComment
+from app.llms.prompts import COMMENT_GENERATION_SYSTEM_PROMPT, COMMENT_GENERATION_USER_PROMPT
+from app.post_generation_styles import (
+    DEFAULT_GENERATION_STYLE,
+    generation_style_labels,
+    generation_style_prompt,
+    normalize_generation_style,
+)
 from app.post_formatting import HASHTAG_RE, format_linkedin_post
 from app.writing_style_extract import extract_writing_style, get_builtin_writing_style
+
+POST_CREATION_ACTIONS = generation_style_labels()
+COMMENT_TOPICS = ["Add Value", "Congratulate", "Agree", "Disagree", "Challenge", "Expert Insight"]
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -48,15 +66,7 @@ SAVED_ACTIONS = [
     "Brainstorm book recommendation about a topic",
     "Brainstorm documentary recommendations about a topic",
     "Brainstorm useful tools about a topic",
-    "Create posts from scratch",
-    "Create a post about a topic",
-    "Create a controversial post about a topic",
-    "Create a top mistakes post about a topic",
-    "Create a daily routine post about a topic",
-    "Create a how to start post about a topic",
-    "Create a motivational post about a topic",
-    "Create a skills to become successful post about a topic",
-    "Create a do's and don'ts post about a topic",
+    *POST_CREATION_ACTIONS,
     "Change the tone of a post",
     "Be more concise",
     "Add a hook",
@@ -70,13 +80,20 @@ def now_iso() -> str:
 
 
 def provider_model(provider: str | None, model: str | None) -> tuple[str, str]:
-    resolved_provider = (provider or DEFAULT_PROVIDER).lower()
+    provider_value = (provider or "").strip()
+    model_value = (model or "").strip()
+    if provider_value.lower() == "string":
+        provider_value = ""
+    if model_value.lower() == "string":
+        model_value = ""
+
+    resolved_provider = (provider_value or DEFAULT_PROVIDER).lower()
     models = PROVIDER_MODELS.get(resolved_provider, [])
-    resolved_model = model or DEFAULT_MODEL or (models[0] if models else "")
+    resolved_model = model_value or DEFAULT_MODEL or (models[0] if models else "")
     return resolved_provider, resolved_model
 
 
-def llm_config(provider: str | None, model: str | None, api_key: str | None = None) -> LLMConfig:
+def llm_config(provider: str | None = None, model: str | None = None, api_key: str | None = None) -> LLMConfig:
     resolved_provider, resolved_model = provider_model(provider, model)
     return LLMConfig(provider=resolved_provider, model=resolved_model, api_key=api_key or "")
 
@@ -186,6 +203,7 @@ def thread_summary(thread: dict[str, Any]) -> ThreadSummary:
             "thread_id": thread.get("thread_id", ""),
             "topic": thread.get("topic", ""),
             "topic_source": thread.get("topic_source", ""),
+            "generation_style": thread.get("generation_style", ""),
             "created_at": thread.get("created_at", ""),
             "updated_at": thread.get("updated_at", ""),
         }
@@ -221,8 +239,9 @@ def _ensure_hashtags(post: str, topic: str) -> str:
 
 def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> ThreadResponse:
     user = require_user(repo, request.user_id)
-    config = llm_config(request.provider, request.model, request.api_key)
-    style = _resolve_style(user, request.generation_style)
+    config = llm_config()
+    style = _resolve_style(user, None)
+    generation_style = normalize_generation_style(request.generation_style or DEFAULT_GENERATION_STYLE)
     profile = user.get("profile") or {}
 
     graph_result = run_post_generation(
@@ -230,6 +249,8 @@ def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> Threa
             "workflow_mode": "generate",
             "topic": request.idea,
             "writing_style": style,
+            "generation_style": generation_style.label,
+            "generation_instructions": generation_style_prompt(generation_style.label),
             "resume_profile": profile,
             "messages": [{"role": "user", "content": request.idea}],
             "provider": config.provider,
@@ -246,6 +267,7 @@ def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> Threa
         "thread_id": str(uuid4()),
         "topic": request.idea,
         "topic_source": request.topic_source,
+        "generation_style": generation_style.label,
         "original_post": post,
         "current_post": post,
         "conversation": graph_result.get("messages", []),
@@ -270,7 +292,7 @@ def modify_post(repo: DynamoRepository, request: ModifyPostRequest) -> ThreadRes
     if not thread:
         raise KeyError(f"Thread not found: {request.thread_id}")
 
-    config = llm_config(request.provider, request.model, request.api_key)
+    config = llm_config()
     messages = list(thread.get("conversation", []))
     messages.append({"role": "user", "content": request.modification_message})
     graph_result = run_post_chat_edit(
@@ -305,7 +327,7 @@ def modify_post(repo: DynamoRepository, request: ModifyPostRequest) -> ThreadRes
 
 def brainstorm(repo: DynamoRepository, request: BrainstormRequest) -> BrainstormResponse:
     user = require_user(repo, request.user_id)
-    config = llm_config(request.provider, request.model, request.api_key)
+    config = llm_config()
     topic = request.topic or user.get("profile", {}).get("headline", "professional growth")
     extra_details = f"{request.action}: {topic}"
     results = research_trending_topics(
@@ -412,7 +434,11 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
         posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
         return creator, posts
 
-    with ThreadPoolExecutor(max_workers=max(1, SCRAPE_MAX_WORKERS)) as executor:
+    max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
+    if max_workers == 1 and len(creators) > 1:
+        print("Running creator scrapes sequentially because the active LinkedIn mode uses a shared browser profile.")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
         for future in as_completed(future_map):
             creator = future_map[future]
@@ -472,6 +498,151 @@ def list_all_activities(repo: DynamoRepository, user_id: str, limit: int | None 
     return activities[: limit or API_LIST_LIMIT]
 
 
+def _normalize_comment_topic(comment_topic: str | None) -> str:
+    cleaned = (comment_topic or "").strip()
+    if not cleaned:
+        return COMMENT_TOPICS[0]
+    for topic in COMMENT_TOPICS:
+        if cleaned.lower() == topic.lower():
+            return topic
+    return cleaned
+
+
+def _format_comment(comment: str) -> str:
+    cleaned = re.sub(r"\s+", " ", comment or "").strip()
+    cleaned = cleaned.replace("#", "").strip()
+    if not cleaned:
+        return "This is a useful angle. The practical takeaway is worth testing in a real workflow."
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    compact = " ".join(sentence for sentence in sentences[:2] if sentence).strip()
+    words = compact.split()
+    if len(words) > 55:
+        compact = " ".join(words[:55]).rstrip(".,;:") + "."
+    return compact
+
+
+def _comment_fallback(comment_topic: str, creator_post: str) -> GeneratedComment:
+    snippet = " ".join(creator_post.split()[:18])
+    if comment_topic == "Congratulate":
+        comment = "Congrats on sharing this. The practical breakdown makes the idea much easier to act on."
+    elif comment_topic == "Agree":
+        comment = "Agreed. The strongest point here is that the workflow matters as much as the tool itself."
+    elif comment_topic == "Disagree":
+        comment = "I see the point, though I would be careful about treating this as universal. The right answer still depends on the workflow and constraints."
+    elif comment_topic == "Challenge":
+        comment = "Good point. The question I would ask is: what is the first signal that this approach is actually working in production?"
+    elif comment_topic == "Expert Insight":
+        comment = "The underrated part is the operating model around this. Without review loops and clear ownership, even strong tools create noisy outputs."
+    else:
+        comment = f"Useful angle. One thing I would add: connect this back to the smallest repeatable workflow, not just the headline idea. Context: {snippet}"
+    return GeneratedComment(comment=_format_comment(comment), rationale="Deterministic fallback comment.")
+
+
+def _require_creator_activity(
+    repo: DynamoRepository,
+    user_id: str,
+    creator_id: str,
+    post_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    user = require_user(repo, user_id)
+    creator = repo.get_creator(user_id, creator_id)
+    if not creator:
+        raise KeyError(f"Creator not found: {creator_id}")
+    activity = repo.get_activity(user_id, creator_id, post_id)
+    if not activity:
+        raise KeyError(f"Creator post not found: {post_id}")
+    return user, creator, activity
+
+
+def _comment_response(activity: dict[str, Any], comment_record: dict[str, Any]) -> CommentResponse:
+    return CommentResponse(
+        user_id=activity["user_id"],
+        creator_id=activity["creator_id"],
+        post_id=activity["post_id"],
+        comment_topic=str(comment_record.get("topic", "")),
+        comment=str(comment_record.get("text", "")),
+        provider=str(comment_record.get("provider", "")),
+        model=str(comment_record.get("model", "")),
+        generated_at=str(comment_record.get("generated_at", "")),
+        commented=bool(comment_record.get("commented", False)),
+    )
+
+
+def generate_comment(repo: DynamoRepository, request: GenerateCommentRequest) -> CommentResponse:
+    user, _, activity = _require_creator_activity(repo, request.user_id, request.creator_id, request.post_id)
+    config = llm_config()
+    comment_topic = _normalize_comment_topic(request.comment_topic)
+    creator_post = str(activity.get("raw_text", ""))
+    generated = invoke_structured(
+        config=config,
+        schema=GeneratedComment,
+        system_prompt=COMMENT_GENERATION_SYSTEM_PROMPT,
+        user_prompt=COMMENT_GENERATION_USER_PROMPT.format(
+            creator_post=creator_post[:5000],
+            comment_topic=comment_topic,
+            resume_profile=json.dumps(user.get("profile") or {}, ensure_ascii=True, indent=2),
+        ),
+        fallback_factory=lambda: _comment_fallback(comment_topic, creator_post),
+    )
+    timestamp = now_iso()
+    engagement = dict(activity.get("engagement") or {})
+    previous_comment = dict(engagement.get("comment") or {})
+    comment_record = {
+        **previous_comment,
+        "topic": comment_topic,
+        "text": _format_comment(generated.comment),
+        "generated_at": timestamp,
+        "provider": config.provider,
+        "model": config.model,
+    }
+    engagement["comment"] = comment_record
+    activity["engagement"] = engagement
+    repo.put_activity(activity)
+    return _comment_response(activity, comment_record)
+
+
+def mark_activity_commented(repo: DynamoRepository, request: MarkCommentedRequest) -> CommentResponse:
+    _, _, activity = _require_creator_activity(repo, request.user_id, request.creator_id, request.post_id)
+    timestamp = now_iso()
+    engagement = dict(activity.get("engagement") or {})
+    comment_record = dict(engagement.get("comment") or {})
+    if request.comment_text is not None:
+        comment_record["text"] = _format_comment(request.comment_text)
+    comment_record["commented"] = request.commented
+    comment_record["marked_at"] = timestamp
+    engagement["comment"] = comment_record
+    activity["engagement"] = engagement
+    repo.put_activity(activity)
+    return _comment_response(activity, comment_record)
+
+
+def list_commented_activities(
+    repo: DynamoRepository,
+    user_id: str,
+    limit: int | None = None,
+) -> list[CommentedActivityResponse]:
+    require_user(repo, user_id)
+    capped_limit = limit or API_LIST_LIMIT
+    matched: list[CommentedActivityResponse] = []
+    for creator in repo.list_creators(user_id, limit=API_LIST_LIMIT):
+        for activity in repo.list_creator_activities(user_id, creator["creator_id"], limit=100):
+            comment_record = dict((activity.get("engagement") or {}).get("comment") or {})
+            if not comment_record.get("commented"):
+                continue
+            matched.append(
+                CommentedActivityResponse.model_validate(
+                    {
+                        **activity,
+                        "comment_topic": str(comment_record.get("topic", "")),
+                        "comment": str(comment_record.get("text", "")),
+                        "commented_at": str(comment_record.get("marked_at", "")),
+                    }
+                )
+            )
+    matched.sort(key=lambda item: item.commented_at or item.fetched_at, reverse=True)
+    return matched[:capped_limit]
+
+
 def generate_from_activity(repo: DynamoRepository, request: GenerateFromActivityRequest) -> ThreadResponse:
     user = require_user(repo, request.user_id)
     creator = repo.get_creator(request.user_id, request.creator_id)
@@ -482,18 +653,21 @@ def generate_from_activity(repo: DynamoRepository, request: GenerateFromActivity
         raise KeyError(f"Creator post not found: {request.post_id}")
 
     source_text = activity["raw_text"]
-    source_style = extract_writing_style(source_text, llm_config(request.provider, request.model, request.api_key)).model_dump()
-    config = llm_config(request.provider, request.model, request.api_key)
+    config = llm_config()
+    source_style = extract_writing_style(source_text, config).model_dump()
     topic = (
         "Create a distinct LinkedIn post variation inspired by this creator post. "
         "Do not copy exact wording. Keep the topic, use similar pacing, and make it original.\n\n"
         f"Creator post:\n{source_text}"
     )
+    generation_style = normalize_generation_style("Create posts from scratch")
     graph_result = run_post_generation(
         {
             "workflow_mode": "generate",
             "topic": topic,
             "writing_style": source_style,
+            "generation_style": generation_style.label,
+            "generation_instructions": generation_style_prompt(generation_style.label),
             "resume_profile": user.get("profile") or {},
             "messages": [{"role": "user", "content": topic}],
             "provider": config.provider,
@@ -510,6 +684,7 @@ def generate_from_activity(repo: DynamoRepository, request: GenerateFromActivity
         "thread_id": str(uuid4()),
         "topic": topic,
         "topic_source": "creator_activity",
+        "generation_style": generation_style.label,
         "original_post": post,
         "current_post": post,
         "conversation": graph_result.get("messages", []),

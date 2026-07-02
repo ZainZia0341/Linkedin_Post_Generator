@@ -35,11 +35,15 @@ Resume profile:
 Research notes:
 {research_notes}
 
+Post creation style:
+{generation_instructions}
+
 Review feedback to address:
 {review_feedback}
 
 Rules:
 - Match the writing style closely.
+- Follow the selected post creation style.
 - Treat research notes as the factual source of truth for current or niche terms.
 - Explain specialized terms in their current context when the topic depends on them.
 - If research notes do not support a factual claim, do not include that claim.
@@ -118,6 +122,34 @@ Formatting rules:
 - Relevant hashtags are allowed, but should be on the final line and capped at five.
 
 If it passes, set passed true. If not, explain exactly what to fix."""
+
+COMMENT_GENERATION_SYSTEM_PROMPT = """You write short LinkedIn comments on saved creator posts.
+Return only structured data that matches the schema. The comment must be ready to paste into LinkedIn."""
+
+COMMENT_GENERATION_USER_PROMPT = """Write a short LinkedIn comment.
+
+Creator post:
+{creator_post}
+
+Comment topic:
+{comment_topic}
+
+User profile:
+{resume_profile}
+
+Rules:
+- Write 1 to 2 sentences.
+- Do not use hashtags.
+- Do not use markdown.
+- Do not invent facts, metrics, personal experience, or claims.
+- Match the comment topic:
+  - Add Value: add a practical useful angle.
+  - Congratulate: celebrate the author naturally.
+  - Agree: agree and add a specific reason.
+  - Disagree: respectfully disagree and explain why.
+  - Challenge: ask a sharp but professional question.
+  - Expert Insight: add a concise expert observation.
+- Keep it human, specific, and professional."""
 
 GUARDRAIL_SYSTEM_PROMPT = """You classify whether a user message is a request to edit the current LinkedIn post.
 Return route='modify_post' only for post editing, rewriting, formatting, tone, length, hook, CTA, hashtag, or content changes.

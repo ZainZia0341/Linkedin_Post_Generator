@@ -227,6 +227,14 @@ def test_post_search_queries_cover_current_context() -> None:
     assert any("latest examples" in query for query in queries)
 
 
+def test_post_search_queries_do_not_inject_software_context_for_non_software_topic() -> None:
+    queries = build_post_search_queries("create a post on claude fable 5 return", count=6)
+    joined = " | ".join(query.lower() for query in queries)
+    assert "software development" not in joined
+    assert "create software development" not in joined
+    assert any("claude fable 5 return meaning current usage" in query.lower() for query in queries)
+
+
 def test_recent_web_search_uses_exact_recent_query_without_key() -> None:
     query = "AWS Lambda latest launch release announcement 2026"
     results = search_recent_web(query, max_results=2)

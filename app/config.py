@@ -52,7 +52,7 @@ LINKEDIN_HEADLESS: Final[bool] = _env_value("LINKEDIN_HEADLESS", "true").lower()
 LINKEDIN_CHECK_MAX_POSTS: Final[int] = int(_env_value("LINKEDIN_CHECK_MAX_POSTS", "5"))
 LINKEDIN_BROWSER_PROFILE_DIR: Final[Path] = PLAYWRIGHT_LOCAL_DIR / "linkedin_burner_profile"
 
-DEFAULT_PROVIDER: Final[str] = _env_value("DEFAULT_LLM_PROVIDER", "groq")
+DEFAULT_PROVIDER: Final[str] = _env_value("DEFAULT_LLM_PROVIDER", "gemini")
 
 PROVIDER_ENV_KEYS: Final[dict[str, str]] = {
     "groq": "GROQ_API_KEY",
@@ -78,12 +78,12 @@ PROVIDER_MODELS: Final[dict[str, list[str]]] = {
         # "meta-llama/llama-prompt-guard-2-22m"  # TPM: 15K
     ],
     "gemini": [
+        "gemini-3.1-flash-lite",
         "gemini-3.5-flash",
         "gemini-2.5-pro",
         "gemini-3-flash-preview",
         "gemini-2.5-flash",
         "gemini-2.5-flash-preview-09-2025",
-        "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash-lite",
         # "gemini-flash-lite-latest"
@@ -162,4 +162,4 @@ def get_models_for_provider(provider: str) -> list[str]:
 
 def get_env_api_key(provider: str) -> str:
     env_name = PROVIDER_ENV_KEYS.get(provider.lower(), "")
-    return os.getenv(env_name, "").strip() if env_name else ""
+    return _env_value(env_name).strip().strip('"').strip("'") if env_name else ""
