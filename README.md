@@ -76,6 +76,60 @@ Remove the DynamoDB Local container instead of only stopping it:
 docker compose -f docker-compose.dynamodb.yml down
 ```
 
+## Hugging Face Spaces Deployment
+
+This repo is configured for a Docker Space with `app_port: 7860`.
+
+Inside the Space container:
+
+- Streamlit runs publicly on `0.0.0.0:7860`
+- FastAPI runs internally on `127.0.0.1:8001`
+- DynamoDB Local runs internally on `127.0.0.1:8000`
+- Streamlit calls FastAPI through `LINKEDIN_API_BASE_URL=http://127.0.0.1:8001`
+
+The Docker image starts all services with:
+
+```bash
+bash scripts/start_hf_space.sh
+```
+
+Deploy to the existing Space remote:
+
+```bash
+git push hf fastapi-dev:main
+```
+
+The Space URL is:
+
+```text
+https://huggingface.co/spaces/ZainZia/linkedin-post-generator
+```
+
+### Space Secrets
+
+Do not commit `.env`. Add runtime secrets in the Space settings instead:
+
+```text
+GOOGLE_API_KEY
+GROQ_API_KEY
+ANTHROPIC_API_KEY
+TAVILY_API_KEY
+DEFAULT_LLM_PROVIDER
+DEFAULT_LLM_MODEL
+LINKEDIN_AUTOMATION_MODE
+LINKEDIN_HEADLESS
+```
+
+### DynamoDB Persistence
+
+DynamoDB Local stores data in `/data/dynamodb` when `/data` is available and
+writable. Attach persistent storage to the Space if you want users, threads,
+creators, and activities to survive Space restarts.
+
+If no persistent `/data` volume is attached, the app still works, but database
+files are written to `/tmp/dynamodb` and can be lost when the Space sleeps,
+restarts, or rebuilds.
+
 ## LinkedIn Burner Session Bootstrap
 
 The app does not automate LinkedIn login. For burner mode, create the isolated
