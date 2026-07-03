@@ -423,7 +423,7 @@ def render_sidebar() -> tuple[list[dict[str, Any]], dict[str, list[str]], bool]:
         model_options = providers.get(provider, [])
         model = st.selectbox("Model", model_options or [""])
         api_key = st.text_input("API key", type="password")
-        if st.button("Test key", disabled=not api_key.strip(), use_container_width=True):
+        if st.button("Test key", disabled=not api_key.strip(), width="stretch"):
             try:
                 result = request_json(
                     "POST",
@@ -799,7 +799,7 @@ def render_creators_tab(selected_user_id: str, user_data: dict[str, Any] | None)
             st.caption(f"Checked: {', '.join(result.get('checked_creator_ids', []))}")
             if result.get("errors"):
                 st.warning("Some creators returned errors.")
-                st.dataframe(result["errors"], use_container_width=True, hide_index=True)
+                st.dataframe(result["errors"], width="stretch", hide_index=True)
             if result.get("new_activities"):
                 st.dataframe(
                     [
@@ -811,7 +811,7 @@ def render_creators_tab(selected_user_id: str, user_data: dict[str, Any] | None)
                         }
                         for item in result["new_activities"]
                     ],
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -832,7 +832,7 @@ def render_creators_tab(selected_user_id: str, user_data: dict[str, Any] | None)
             }
             for creator in creators
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -876,7 +876,7 @@ def render_activity_tab(selected_user_id: str, user_data: dict[str, Any] | None)
             }
             for item in activities
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1037,7 +1037,7 @@ def render_comments_tab(
                 }
                 for item in commented
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1064,7 +1064,7 @@ def render_history_tab(selected_user_id: str) -> None:
             }
             for item in threads
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 

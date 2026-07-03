@@ -10,6 +10,7 @@ ENV STREAMLIT_PORT=7860
 ENV DYNAMODB_PORT=8000
 ENV DYNAMODB_ENDPOINT_URL=http://127.0.0.1:8000
 ENV LINKEDIN_API_BASE_URL=http://127.0.0.1:8001
+ENV LOCAL_DB_DIR=/data/local_db
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
