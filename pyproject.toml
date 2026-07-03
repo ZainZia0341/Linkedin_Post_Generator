@@ -21,6 +21,7 @@ dependencies = [
     "pypdf>=6.14.0",
     "pytest>=9.1.1",
     "python-dotenv>=1.2.2",
+    "streamlit>=1.41.0",
     "tavily-python>=0.7.26",
     "uvicorn>=0.49.0",
 ]
