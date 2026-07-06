@@ -142,3 +142,12 @@ uv run python scripts/bootstrap_linkedin_session.py
 Log in manually in the opened browser window with a burner account only. After
 that, set `LINKEDIN_AUTOMATION_MODE=burner` and the API will reuse the isolated
 session in `schema/local_db/playwright/linkedin_burner_profile`.
+
+
+
+Created private bucket:
+ZainZia/linkedin-post-generator-db
+Bucket URI:
+hf://buckets/ZainZia/linkedin-post-generator-db
+
+

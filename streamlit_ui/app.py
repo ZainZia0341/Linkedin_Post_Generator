@@ -31,6 +31,9 @@ def init_state() -> None:
         "last_comment": None,
         "last_brainstorm": None,
         "last_scrape": None,
+        "last_recent_scrape": None,
+        "last_recent_db_activities": None,
+        "last_bulk_import": None,
         "last_activity_thread": None,
     }
     for key, value in defaults.items():
@@ -255,6 +258,36 @@ def request_json(
                 api_url(path),
                 json=payload,
                 params=params,
+            )
+    except httpx.ConnectError as exc:
+        raise ApiError(f"Could not connect to {normalize_base_url(st.session_state.api_base_url)}") from exc
+    except httpx.TimeoutException as exc:
+        raise ApiError("The API request timed out.") from exc
+    except httpx.HTTPError as exc:
+        raise ApiError(str(exc)) from exc
+
+    if response.status_code >= 400:
+        raise ApiError(error_message(response), response.status_code)
+    if not response.content:
+        return None
+    return response.json()
+
+
+def request_multipart(
+    method: str,
+    path: str,
+    *,
+    data: dict[str, Any],
+    files: dict[str, Any],
+    timeout: float = REQUEST_TIMEOUT,
+) -> Any:
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.request(
+                method,
+                api_url(path),
+                data=data,
+                files=files,
             )
     except httpx.ConnectError as exc:
         raise ApiError(f"Could not connect to {normalize_base_url(st.session_state.api_base_url)}") from exc
@@ -850,6 +883,262 @@ def render_creators_tab(selected_user_id: str, user_data: dict[str, Any] | None)
                 show_api_error(exc)
 
 
+def render_bulk_import_tab(selected_user_id: str) -> None:
+    st.subheader("Bulk Import")
+    if not selected_user_id:
+        st.info("Select a user first.")
+        return
+
+    with st.container(border=True):
+        uploaded_file = st.file_uploader(
+            "Creator sheet",
+            type=["csv", "txt", "xlsx"],
+            accept_multiple_files=False,
+        )
+        if st.button("Import creators", type="primary", disabled=uploaded_file is None):
+            if uploaded_file is None:
+                st.warning("Upload a creator sheet first.")
+            else:
+                try:
+                    files = {
+                        "file": (
+                            uploaded_file.name,
+                            uploaded_file.getvalue(),
+                            uploaded_file.type or "application/octet-stream",
+                        )
+                    }
+                    with st.spinner("Importing creators..."):
+                        result = request_multipart(
+                            "POST",
+                            "/creators/import",
+                            data={"user_id": selected_user_id},
+                            files=files,
+                            timeout=LONG_REQUEST_TIMEOUT,
+                        )
+                    st.session_state.last_bulk_import = result
+                    st.success(f"Imported {len(result.get('added_creators', []))} creator(s).")
+                except ApiError as exc:
+                    show_api_error(exc)
+
+    result = st.session_state.last_bulk_import
+    if not result:
+        return
+
+    cols = st.columns(5)
+    cols[0].metric("Parsed URLs", result.get("total_urls", 0))
+    cols[1].metric("Added", len(result.get("added_creators", [])))
+    cols[2].metric("Existing", len(result.get("skipped_existing_creator_ids", [])))
+    cols[3].metric("File duplicates", len(result.get("skipped_duplicate_creator_ids", [])))
+    cols[4].metric("Errors", len(result.get("errors", [])))
+
+    if result.get("added_creators"):
+        st.markdown("**Added Creators**")
+        st.dataframe(
+            [
+                {
+                    "creator_id": creator.get("creator_id"),
+                    "display_name": creator.get("display_name"),
+                    "profile_url": creator.get("profile_url"),
+                    "added_at": short_time(creator.get("added_at")),
+                }
+                for creator in result["added_creators"]
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+    skipped_rows = [
+        {"type": "already tracked", "creator_id": creator_id}
+        for creator_id in result.get("skipped_existing_creator_ids", [])
+    ] + [
+        {"type": "duplicate in file", "creator_id": creator_id}
+        for creator_id in result.get("skipped_duplicate_creator_ids", [])
+    ]
+    if skipped_rows:
+        st.markdown("**Skipped**")
+        st.dataframe(skipped_rows, width="stretch", hide_index=True)
+
+    if result.get("errors"):
+        st.markdown("**Import Errors**")
+        st.dataframe(result["errors"], width="stretch", hide_index=True)
+
+
+def render_recent_scrape_tab(selected_user_id: str, user_data: dict[str, Any] | None) -> None:
+    st.subheader("24h Scrape")
+    if not selected_user_id:
+        st.info("Select a user first.")
+        return
+
+    creators = (user_data or {}).get("creators") or get_or_default(
+        f"/users/{selected_user_id}/creators",
+        [],
+        params={"limit": 100},
+    )
+    creator_ids = [creator.get("creator_id", "") for creator in creators if creator.get("creator_id")]
+
+    with st.container(border=True):
+        selected_creator_ids = st.multiselect(
+            "Creators",
+            creator_ids,
+            default=creator_ids[: min(3, len(creator_ids))],
+            key="recent_scrape_creators",
+        )
+        max_posts = st.slider(
+            "Posts per creator",
+            min_value=1,
+            max_value=20,
+            value=5,
+            key="recent_scrape_max_posts",
+        )
+        window_hours = st.slider(
+            "Window hours",
+            min_value=1,
+            max_value=168,
+            value=24,
+            key="recent_scrape_window_hours",
+        )
+        if st.button("Check recent posts", type="primary", disabled=not creator_ids):
+            try:
+                with st.spinner("Checking recent creator posts..."):
+                    result = request_json(
+                        "POST",
+                        "/creators/scrape/recent-24h",
+                        payload={
+                            "user_id": selected_user_id,
+                            "creator_ids": selected_creator_ids or None,
+                            "max_posts": max_posts,
+                            "window_hours": window_hours,
+                        },
+                        timeout=LONG_REQUEST_TIMEOUT,
+                    )
+                st.session_state.last_recent_scrape = result
+                st.success(f"Found {len(result.get('activities', []))} recent activities.")
+            except ApiError as exc:
+                show_api_error(exc)
+
+    result = st.session_state.last_recent_scrape
+    if not result:
+        return
+
+    with st.container(border=True):
+        st.markdown("**Latest 24h Check**")
+        st.caption(
+            " | ".join(
+                item
+                for item in [
+                    f"Window: {result.get('window_hours', 24)}h",
+                    f"Checked: {', '.join(result.get('checked_creator_ids', []))}",
+                ]
+                if item.strip(": ")
+            )
+        )
+        if result.get("errors"):
+            st.warning("Some creators returned errors.")
+            st.dataframe(result["errors"], width="stretch", hide_index=True)
+        activities = result.get("activities", [])
+        if activities:
+            st.dataframe(
+                [
+                    {
+                        "creator": item.get("creator_id"),
+                        "posted": item.get("posted_at_text"),
+                        "new_in_db": item.get("is_new", False),
+                        "text": compact(item.get("raw_text"), 130),
+                        "url": item.get("post_url"),
+                    }
+                    for item in activities
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info("No posts matched the selected time window.")
+
+
+def render_recent_db_tab(selected_user_id: str) -> None:
+    st.subheader("24h Saved")
+    if not selected_user_id:
+        st.info("Select a user first.")
+        return
+
+    with st.container(border=True):
+        cols = st.columns([1, 1, 2])
+        window_hours = cols[0].slider(
+            "Window hours",
+            min_value=1,
+            max_value=168,
+            value=24,
+            key="recent_db_window_hours",
+        )
+        limit = cols[1].number_input(
+            "Limit",
+            min_value=1,
+            max_value=500,
+            value=100,
+            step=10,
+            key="recent_db_limit",
+        )
+        if cols[2].button("Load saved recent posts", type="primary"):
+            try:
+                result = request_json(
+                    "GET",
+                    f"/users/{selected_user_id}/activities/recent-24h",
+                    params={"limit": int(limit), "window_hours": int(window_hours)},
+                )
+                st.session_state.last_recent_db_activities = result
+                st.success(f"Loaded {len(result.get('activities', []))} saved activities.")
+            except ApiError as exc:
+                show_api_error(exc)
+
+    result = st.session_state.last_recent_db_activities
+    if not result:
+        return
+
+    activities = result.get("activities", [])
+    st.caption(f"Window: {result.get('window_hours', 24)}h | Saved activities: {len(activities)}")
+    if not activities:
+        st.info("No saved posts matched the selected time window.")
+        return
+
+    st.dataframe(
+        [
+            {
+                "creator": item.get("creator_id"),
+                "posted": item.get("posted_at_text"),
+                "fetched": short_time(item.get("fetched_at")),
+                "new_in_db": item.get("is_new", False),
+                "text": compact(item.get("raw_text"), 130),
+                "url": item.get("post_url"),
+            }
+            for item in activities
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    selected_activity = st.selectbox("Saved recent activity", activities, format_func=activity_label)
+    with st.container(border=True):
+        st.caption(
+            " | ".join(
+                item
+                for item in [
+                    f"Creator: {selected_activity.get('creator_id')}",
+                    f"Post: {compact(selected_activity.get('post_id'), 36)}",
+                    f"Fetched: {short_time(selected_activity.get('fetched_at'))}",
+                ]
+                if item.strip(": ")
+            )
+        )
+        st.text_area(
+            "Saved creator post",
+            value=selected_activity.get("raw_text", ""),
+            height=260,
+            key=f"recent_db_text_{selected_activity.get('creator_id')}_{selected_activity.get('post_id')}",
+        )
+        if selected_activity.get("post_url"):
+            st.link_button("Open LinkedIn post", selected_activity["post_url"])
+
+
 def render_activity_tab(selected_user_id: str, user_data: dict[str, Any] | None) -> None:
     st.subheader("Activity")
     if not selected_user_id:
@@ -1135,6 +1424,9 @@ def main() -> None:
             "Ideas",
             "Modify",
             "Creators",
+            "Bulk Import",
+            "24h Scrape",
+            "24h Saved",
             "Activity",
             "Comments",
             "History",
@@ -1151,12 +1443,18 @@ def main() -> None:
     with tabs[3]:
         render_creators_tab(selected_user_id, user_data)
     with tabs[4]:
-        render_activity_tab(selected_user_id, user_data)
+        render_bulk_import_tab(selected_user_id)
     with tabs[5]:
-        render_comments_tab(selected_user_id, user_data, comment_topics)
+        render_recent_scrape_tab(selected_user_id, user_data)
     with tabs[6]:
-        render_history_tab(selected_user_id)
+        render_recent_db_tab(selected_user_id)
     with tabs[7]:
+        render_activity_tab(selected_user_id, user_data)
+    with tabs[8]:
+        render_comments_tab(selected_user_id, user_data, comment_topics)
+    with tabs[9]:
+        render_history_tab(selected_user_id)
+    with tabs[10]:
         render_profile_tab(users, selected_user_id)
 
 

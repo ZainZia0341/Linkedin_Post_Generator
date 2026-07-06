@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
+import io
 import json
 import re
 from typing import Any
 from uuid import uuid4
+import zipfile
+from xml.etree import ElementTree
 
 from app.api.schemas import (
     ActivityResponse,
     BrainstormRequest,
     BrainstormResponse,
+    BulkCreatorImportResponse,
     CommentResponse,
     CommentedActivityResponse,
     CreatorResponse,
@@ -20,6 +25,9 @@ from app.api.schemas import (
     GeneratePostRequest,
     MarkCommentedRequest,
     ModifyPostRequest,
+    RecentActivitiesResponse,
+    RecentScrapeCreatorsRequest,
+    RecentScrapeCreatorsResponse,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
     ThreadResponse,
@@ -54,6 +62,8 @@ from app.writing_style_extract import extract_writing_style, get_builtin_writing
 
 POST_CREATION_ACTIONS = generation_style_labels()
 COMMENT_TOPICS = ["Add Value", "Congratulate", "Agree", "Disagree", "Challenge", "Expert Insight"]
+LINKEDIN_URL_RE = re.compile(r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?linkedin\.com(?:/[^\s<>'\"]*)?", flags=re.I)
+CREATOR_IMPORT_EXISTING_LIMIT = 1000
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -375,16 +385,30 @@ def create_creator(repo: DynamoRepository, user_id: str, profile_url: str) -> Cr
     creator_id = get_profile_id(normalized_url)
     timestamp = now_iso()
     existing = repo.get_creator(user_id, creator_id)
+    if existing:
+        return CreatorResponse.model_validate(
+            {
+                "user_id": user_id,
+                "creator_id": creator_id,
+                "profile_url": existing.get("profile_url", normalized_url),
+                "display_name": existing.get("display_name", creator_id),
+                "added_at": existing.get("added_at", timestamp),
+                "updated_at": existing.get("updated_at", existing.get("added_at", timestamp)),
+                "last_checked_at": existing.get("last_checked_at"),
+                "seen_count": existing.get("seen_count", 0),
+                "new_count": existing.get("new_count", 0),
+            }
+        )
     record = {
         "user_id": user_id,
         "creator_id": creator_id,
         "profile_url": normalized_url,
         "display_name": creator_id,
-        "added_at": existing.get("added_at", timestamp) if existing else timestamp,
+        "added_at": timestamp,
         "updated_at": timestamp,
-        "last_checked_at": existing.get("last_checked_at") if existing else None,
-        "seen_count": existing.get("seen_count", 0) if existing else 0,
-        "new_count": existing.get("new_count", 0) if existing else 0,
+        "last_checked_at": None,
+        "seen_count": 0,
+        "new_count": 0,
     }
     return CreatorResponse.model_validate(repo.put_creator(record))
 
@@ -395,6 +419,218 @@ def creator_response(creator: dict[str, Any]) -> CreatorResponse:
 
 def _activity_response(activity: dict[str, Any]) -> ActivityResponse:
     return ActivityResponse.model_validate(activity)
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value and value not in values:
+        values.append(value)
+
+
+def _tag_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _child_text(element: ElementTree.Element, child_name: str) -> str:
+    for child in element:
+        if _tag_name(child.tag) == child_name:
+            return child.text or ""
+    return ""
+
+
+def _rich_text(element: ElementTree.Element) -> str:
+    return "".join(child.text or "" for child in element.iter() if _tag_name(child.tag) == "t").strip()
+
+
+def _decode_sheet_text(content: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="ignore")
+
+
+def _add_url_candidates(candidates: list[dict[str, str]], row_label: str, value: Any) -> None:
+    text = str(value or "").strip()
+    if not text:
+        return
+    for match in LINKEDIN_URL_RE.finditer(text):
+        url = match.group(0).strip().rstrip(").,;]")
+        if url:
+            candidates.append({"row": row_label, "url": url})
+
+
+def _creator_url_candidates_from_text(content: bytes, *, csv_mode: bool) -> list[dict[str, str]]:
+    text = _decode_sheet_text(content)
+    candidates: list[dict[str, str]] = []
+    if csv_mode:
+        reader = csv.reader(io.StringIO(text))
+        for row_number, row in enumerate(reader, start=1):
+            for cell in row:
+                _add_url_candidates(candidates, str(row_number), cell)
+        return candidates
+
+    for row_number, line in enumerate(text.splitlines(), start=1):
+        _add_url_candidates(candidates, str(row_number), line)
+    return candidates
+
+
+def _xlsx_shared_strings(root: ElementTree.Element) -> list[str]:
+    shared_strings: list[str] = []
+    for item in root.iter():
+        if _tag_name(item.tag) == "si":
+            shared_strings.append(_rich_text(item))
+    return shared_strings
+
+
+def _creator_url_candidates_from_xlsx(content: bytes) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as workbook:
+            names = set(workbook.namelist())
+            shared_strings: list[str] = []
+            if "xl/sharedStrings.xml" in names:
+                shared_root = ElementTree.fromstring(workbook.read("xl/sharedStrings.xml"))
+                shared_strings = _xlsx_shared_strings(shared_root)
+
+            sheet_names = sorted(name for name in names if re.match(r"xl/worksheets/sheet\d+\.xml$", name))
+            for sheet_name in sheet_names:
+                sheet_root = ElementTree.fromstring(workbook.read(sheet_name))
+                sheet_number = re.search(r"sheet(\d+)\.xml$", sheet_name)
+                sheet_label = sheet_number.group(1) if sheet_number else sheet_name
+                for row in sheet_root.iter():
+                    if _tag_name(row.tag) != "row":
+                        continue
+                    row_number = row.attrib.get("r", "")
+                    row_label = f"sheet {sheet_label} row {row_number or '?'}"
+                    for cell in row:
+                        if _tag_name(cell.tag) != "c":
+                            continue
+                        cell_type = cell.attrib.get("t", "")
+                        value = ""
+                        if cell_type == "s":
+                            index_text = _child_text(cell, "v")
+                            if index_text.isdigit() and int(index_text) < len(shared_strings):
+                                value = shared_strings[int(index_text)]
+                        elif cell_type == "inlineStr":
+                            value = _rich_text(cell)
+                        else:
+                            value = _child_text(cell, "v")
+                        _add_url_candidates(candidates, row_label, value)
+    except (ElementTree.ParseError, KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Could not read the XLSX file: {exc}") from exc
+    return candidates
+
+
+def _creator_url_candidates_from_file(file_name: str, content: bytes) -> list[dict[str, str]]:
+    lower_name = (file_name or "").lower()
+    if lower_name.endswith(".xls"):
+        raise ValueError("Only .csv, .txt, and .xlsx files are supported. Export old .xls files as .xlsx or CSV.")
+    if lower_name.endswith(".xlsx") or content[:2] == b"PK":
+        return _creator_url_candidates_from_xlsx(content)
+    return _creator_url_candidates_from_text(content, csv_mode=lower_name.endswith(".csv"))
+
+
+def import_creators_from_file(
+    repo: DynamoRepository,
+    user_id: str,
+    file_name: str,
+    content: bytes,
+) -> BulkCreatorImportResponse:
+    require_user(repo, user_id)
+    candidates = _creator_url_candidates_from_file(file_name, content)
+    existing_creators = repo.list_creators(user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
+    existing_creator_ids = {creator.get("creator_id", "") for creator in existing_creators}
+    file_creator_ids: set[str] = set()
+    added_creators: list[CreatorResponse] = []
+    skipped_existing_creator_ids: list[str] = []
+    skipped_duplicate_creator_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    for candidate in candidates:
+        row_label = candidate.get("row", "")
+        raw_url = candidate.get("url", "")
+        try:
+            normalized_url = normalize_linkedin_profile_url(raw_url)
+            creator_id = get_profile_id(normalized_url)
+        except ValueError as exc:
+            errors.append({"row": row_label, "url": raw_url, "message": str(exc)})
+            continue
+
+        if creator_id in file_creator_ids:
+            _append_unique(skipped_duplicate_creator_ids, creator_id)
+            continue
+        if creator_id in existing_creator_ids:
+            _append_unique(skipped_existing_creator_ids, creator_id)
+            continue
+
+        creator = create_creator(repo, user_id, normalized_url)
+        added_creators.append(creator)
+        file_creator_ids.add(creator.creator_id)
+
+    if not candidates:
+        errors.append({"row": "", "url": "", "message": "No LinkedIn creator URLs were found in the uploaded file."})
+
+    return BulkCreatorImportResponse(
+        user_id=user_id,
+        total_urls=len(candidates),
+        added_creators=added_creators,
+        skipped_existing_creator_ids=skipped_existing_creator_ids,
+        skipped_duplicate_creator_ids=skipped_duplicate_creator_ids,
+        errors=errors,
+    )
+
+
+def _hours_from_linkedin_time_text(posted_at_text: str) -> float | None:
+    text = re.sub(r"\s+", " ", str(posted_at_text or "").lower())
+    text = text.replace("•", " ").replace("·", " ").strip()
+    if not text:
+        return None
+    if any(marker in text for marker in ("just now", "now", "moments ago", "seconds ago")):
+        return 0.0
+    if "yesterday" in text:
+        return 24.0
+    if re.search(r"\b\d+\s*(?:w|wk|wks|week|weeks|mo|month|months|y|yr|yrs|year|years)\b", text):
+        return None
+
+    minute_match = re.search(r"\b(\d+)\s*(?:m|min|mins|minute|minutes)\b", text)
+    if minute_match:
+        return int(minute_match.group(1)) / 60
+    hour_match = re.search(r"\b(\d+)\s*(?:h|hr|hrs|hour|hours)\b", text)
+    if hour_match:
+        return float(hour_match.group(1))
+    day_match = re.search(r"\b(\d+)\s*(?:d|day|days)\b", text)
+    if day_match:
+        return float(day_match.group(1)) * 24
+    return None
+
+
+def _parse_activity_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _estimated_posted_at(raw_post: dict[str, Any]) -> datetime | None:
+    hours = _hours_from_linkedin_time_text(str(raw_post.get("posted_at_text", "")))
+    if hours is None:
+        return None
+    fetched_at = _parse_activity_datetime(raw_post.get("fetched_at")) or datetime.now(UTC)
+    return fetched_at - timedelta(hours=hours)
+
+
+def _is_post_inside_window(raw_post: dict[str, Any], window_hours: int) -> bool:
+    posted_at = _estimated_posted_at(raw_post)
+    if posted_at is None:
+        return False
+    return posted_at >= datetime.now(UTC) - timedelta(hours=window_hours)
 
 
 def _normalize_activity(user_id: str, creator: dict[str, Any], raw_post: dict[str, Any], is_new: bool) -> dict[str, Any]:
@@ -487,6 +723,81 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
     )
 
 
+def scrape_creators_recent_24h(
+    repo: DynamoRepository,
+    request: RecentScrapeCreatorsRequest,
+) -> RecentScrapeCreatorsResponse:
+    require_user(repo, request.user_id)
+    creators = repo.list_creators(request.user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
+    if request.creator_ids:
+        creator_id_set = set(request.creator_ids)
+        creators = [creator for creator in creators if creator["creator_id"] in creator_id_set]
+
+    errors: list[dict[str, str]] = []
+    activities: list[ActivityResponse] = []
+
+    def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
+        return creator, posts
+
+    max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
+    if max_workers == 1 and len(creators) > 1:
+        print("Running creator scrapes sequentially because the active LinkedIn mode uses a shared browser profile.")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
+        for future in as_completed(future_map):
+            creator = future_map[future]
+            timestamp = now_iso()
+            try:
+                _, posts = future.result()
+            except Exception as exc:
+                errors.append({"creator_id": creator["creator_id"], "message": str(exc)})
+                continue
+
+            if posts and isinstance(posts[0], dict) and posts[0].get("error"):
+                errors.append(
+                    {
+                        "creator_id": creator["creator_id"],
+                        "message": str(posts[0].get("message") or posts[0].get("error")),
+                    }
+                )
+                creator["last_checked_at"] = timestamp
+                repo.put_creator(creator)
+                continue
+
+            creator_new_count = 0
+            for post in posts:
+                if not isinstance(post, dict) or not str(post.get("raw_text", "")).strip():
+                    continue
+                if not _is_post_inside_window(post, request.window_hours):
+                    continue
+
+                probe = _normalize_activity(request.user_id, creator, post, is_new=False)
+                existing = repo.get_activity(request.user_id, creator["creator_id"], probe["post_id"])
+                activity = _normalize_activity(request.user_id, creator, post, is_new=existing is None)
+                if existing and existing.get("engagement"):
+                    activity["engagement"] = existing["engagement"]
+                repo.put_activity(activity)
+                activities.append(_activity_response(activity))
+                if existing is None:
+                    creator_new_count += 1
+
+            creator["last_checked_at"] = timestamp
+            creator["seen_count"] = len(repo.list_creator_activities(request.user_id, creator["creator_id"], API_LIST_LIMIT))
+            creator["new_count"] = creator_new_count
+            creator["updated_at"] = timestamp
+            repo.put_creator(creator)
+
+    return RecentScrapeCreatorsResponse(
+        user_id=request.user_id,
+        checked_creator_ids=[creator["creator_id"] for creator in creators],
+        window_hours=request.window_hours,
+        activities=activities,
+        errors=errors,
+    )
+
+
 def list_all_activities(repo: DynamoRepository, user_id: str, limit: int | None = None) -> list[ActivityResponse]:
     require_user(repo, user_id)
     activities: list[ActivityResponse] = []
@@ -494,8 +805,31 @@ def list_all_activities(repo: DynamoRepository, user_id: str, limit: int | None 
         activities.extend(
             _activity_response(activity)
             for activity in repo.list_creator_activities(user_id, creator["creator_id"], limit or API_LIST_LIMIT)
-        )
+    )
     return activities[: limit or API_LIST_LIMIT]
+
+
+def list_recent_activities_from_db(
+    repo: DynamoRepository,
+    user_id: str,
+    limit: int | None = None,
+    window_hours: int = 24,
+) -> RecentActivitiesResponse:
+    require_user(repo, user_id)
+    capped_limit = limit or API_LIST_LIMIT
+    activities: list[ActivityResponse] = []
+    for creator in repo.list_creators(user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT):
+        for activity in repo.list_creator_activities(user_id, creator["creator_id"], limit=capped_limit):
+            if not _is_post_inside_window(activity, window_hours):
+                continue
+            activities.append(_activity_response(activity))
+
+    activities.sort(key=lambda item: item.fetched_at, reverse=True)
+    return RecentActivitiesResponse(
+        user_id=user_id,
+        window_hours=window_hours,
+        activities=activities[:capped_limit],
+    )
 
 
 def _normalize_comment_topic(comment_topic: str | None) -> str:

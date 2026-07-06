@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import time
+import zipfile
 
 from app.api.schemas import (
     CreatorCreateRequest,
@@ -8,6 +10,7 @@ from app.api.schemas import (
     GeneratePostRequest,
     MarkCommentedRequest,
     ModifyPostRequest,
+    RecentScrapeCreatorsRequest,
     ScrapeCreatorsRequest,
 )
 from app.api.services import (
@@ -15,10 +18,12 @@ from app.api.services import (
     create_user,
     generate_comment,
     generate_post,
+    import_creators_from_file,
     list_commented_activities,
     mark_activity_commented,
     modify_post,
     scrape_creators,
+    scrape_creators_recent_24h,
 )
 import app.api.services as services
 from app.writing_style_extract import get_builtin_writing_style
@@ -118,6 +123,68 @@ def test_api_service_add_creator_normalizes_url() -> None:
     creator = create_creator(repo, "test-user-1", "linkedin.com/in/theburningmonk/?trk=abc")
     assert creator.creator_id == "theburningmonk"
     assert creator.profile_url == "https://www.linkedin.com/in/theburningmonk/"
+
+
+def test_api_service_add_creator_duplicate_returns_existing_without_rewrite() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    create_creator(repo, "test-user-1", "https://www.linkedin.com/in/theburningmonk/")
+    stored = repo.creators[("test-user-1", "theburningmonk")]
+    stored["updated_at"] = "kept-updated-at"
+    stored["seen_count"] = 7
+
+    duplicate = create_creator(repo, "test-user-1", "linkedin.com/in/theburningmonk/?trk=abc")
+
+    assert duplicate.creator_id == "theburningmonk"
+    assert duplicate.updated_at == "kept-updated-at"
+    assert duplicate.seen_count == 7
+    assert len(repo.creators) == 1
+
+
+def test_bulk_creator_import_skips_existing_and_file_duplicates() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    create_creator(repo, "test-user-1", "https://www.linkedin.com/in/existing-person/")
+    content = "\n".join(
+        [
+            "creator_url",
+            "https://www.linkedin.com/in/existing-person/",
+            "https://www.linkedin.com/in/new-person/",
+            "linkedin.com/in/new-person/?trk=copy",
+            "https://www.linkedin.com/",
+        ]
+    ).encode("utf-8")
+
+    response = import_creators_from_file(repo, "test-user-1", "creators.csv", content)
+
+    assert response.total_urls == 4
+    assert [creator.creator_id for creator in response.added_creators] == ["new-person"]
+    assert response.skipped_existing_creator_ids == ["existing-person"]
+    assert response.skipped_duplicate_creator_ids == ["new-person"]
+    assert len(response.errors) == 1
+    assert "profile path" in response.errors[0]["message"]
+
+
+def test_bulk_creator_import_reads_xlsx_upload() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    buffer = io.BytesIO()
+    sheet_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>https://www.linkedin.com/in/sheet-person/</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>
+"""
+    with zipfile.ZipFile(buffer, "w") as workbook:
+        workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+    response = import_creators_from_file(repo, "test-user-1", "creators.xlsx", buffer.getvalue())
+
+    assert response.errors == []
+    assert [creator.creator_id for creator in response.added_creators] == ["sheet-person"]
 
 
 def test_generate_post_request_does_not_expose_llm_credentials() -> None:
@@ -222,3 +289,76 @@ def test_scrape_creators_uses_one_worker_in_burner_mode(monkeypatch) -> None:
     assert max_active == 1
     assert response.errors == []
     assert len(response.new_activities) == 2
+
+
+def test_recent_24h_scrape_returns_seen_posts_again_and_filters_old(monkeypatch) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    create_creator(repo, "test-user-1", "https://www.linkedin.com/in/recent-person/")
+    repo.put_activity(
+        {
+            "user_creator_id": "test-user-1#recent-person",
+            "user_id": "test-user-1",
+            "creator_id": "recent-person",
+            "post_id": "urn:li:activity:recent-seen",
+            "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:recent-seen/",
+            "raw_text": "Previously saved version of a recent creator post.",
+            "author_name": "Recent Person",
+            "posted_at_text": "1h",
+            "fetched_at": "2026-07-02T00:00:00+00:00",
+            "content_hash": "hash-recent-seen",
+            "source": "playwright",
+            "is_new": True,
+            "engagement": {"comment": {"commented": True, "text": "Already commented."}},
+        }
+    )
+
+    def fake_fetch(profile_url: str, max_posts: int = 5):
+        return [
+            {
+                "post_id": "urn:li:activity:recent-seen",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:recent-seen/",
+                "raw_text": "Updated scrape text for the same recent creator post.",
+                "author_name": "Recent Person",
+                "posted_at_text": "2h",
+                "source": "playwright",
+            },
+            {
+                "post_id": "urn:li:activity:recent-new",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:recent-new/",
+                "raw_text": "A brand new creator post from inside the last hour.",
+                "author_name": "Recent Person",
+                "posted_at_text": "45m",
+                "source": "playwright",
+            },
+            {
+                "post_id": "urn:li:activity:old-post",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:old-post/",
+                "raw_text": "An older creator post that should not be returned.",
+                "author_name": "Recent Person",
+                "posted_at_text": "2d",
+                "source": "playwright",
+            },
+        ]
+
+    monkeypatch.setattr(services, "LINKEDIN_AUTOMATION_MODE", "logged_out")
+    monkeypatch.setattr(services, "fetch_recent_profile_posts", fake_fetch)
+
+    response = scrape_creators_recent_24h(
+        repo,
+        RecentScrapeCreatorsRequest(
+            user_id="test-user-1",
+            creator_ids=["recent-person"],
+            max_posts=3,
+            window_hours=24,
+        ),
+    )
+
+    returned = {activity.post_id: activity for activity in response.activities}
+    assert set(returned) == {"urn:li:activity:recent-seen", "urn:li:activity:recent-new"}
+    assert returned["urn:li:activity:recent-seen"].is_new is False
+    assert returned["urn:li:activity:recent-new"].is_new is True
+    assert repo.get_activity("test-user-1", "recent-person", "urn:li:activity:old-post") is None
+    stored_seen = repo.get_activity("test-user-1", "recent-person", "urn:li:activity:recent-seen")
+    assert stored_seen["engagement"]["comment"]["commented"] is True
+    assert stored_seen["raw_text"] == "Updated scrape text for the same recent creator post."

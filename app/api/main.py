@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 
 from app.api.schemas import (
     ActivityResponse,
@@ -10,6 +10,7 @@ from app.api.schemas import (
     ApiKeyTestResponse,
     BrainstormRequest,
     BrainstormResponse,
+    BulkCreatorImportResponse,
     CommentResponse,
     CommentedActivityResponse,
     CreatorCreateRequest,
@@ -20,6 +21,9 @@ from app.api.schemas import (
     GeneratePostRequest,
     MarkCommentedRequest,
     ModifyPostRequest,
+    RecentActivitiesResponse,
+    RecentScrapeCreatorsRequest,
+    RecentScrapeCreatorsResponse,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
     ThreadResponse,
@@ -39,10 +43,13 @@ from app.api.services import (
     generate_comment,
     generate_from_activity,
     generate_post,
+    import_creators_from_file,
     list_commented_activities,
     list_all_activities,
+    list_recent_activities_from_db,
     mark_activity_commented,
     modify_post,
+    scrape_creators_recent_24h,
     seed_default_users,
     thread_response,
     thread_summary,
@@ -282,6 +289,21 @@ def add_creator(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/creators/import", response_model=BulkCreatorImportResponse)
+async def import_creators_endpoint(
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    user_id: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+) -> BulkCreatorImportResponse:
+    try:
+        content = await file.read()
+        return import_creators_from_file(repo, user_id, file.filename or "", content)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/users/{user_id}/creators", response_model=list[CreatorResponse])
 def list_creators(
     user_id: str,
@@ -316,6 +338,17 @@ def scrape_creators_endpoint(
         raise _not_found(exc) from exc
 
 
+@app.post("/creators/scrape/recent-24h", response_model=RecentScrapeCreatorsResponse)
+def scrape_recent_creators_endpoint(
+    payload: RecentScrapeCreatorsRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> RecentScrapeCreatorsResponse:
+    try:
+        return scrape_creators_recent_24h(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
 @app.get("/users/{user_id}/creators/{creator_id}/activities", response_model=list[ActivityResponse])
 def list_creator_activities(
     user_id: str,
@@ -338,6 +371,19 @@ def list_user_activities(
     limit: int = Query(default=API_LIST_LIMIT, ge=1, le=100),
 ) -> list[ActivityResponse]:
     return list_all_activities(repo, user_id, limit)
+
+
+@app.get("/users/{user_id}/activities/recent-24h", response_model=RecentActivitiesResponse)
+def list_recent_user_activities(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=500),
+    window_hours: int = Query(default=24, ge=1, le=168),
+) -> RecentActivitiesResponse:
+    try:
+        return list_recent_activities_from_db(repo, user_id, limit, window_hours)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
 
 
 @app.get("/users/{user_id}/engagements/comments", response_model=list[CommentedActivityResponse])
