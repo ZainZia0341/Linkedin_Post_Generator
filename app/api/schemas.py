@@ -144,6 +144,11 @@ class RecentScrapeCreatorsRequest(BaseModel):
     window_hours: int = Field(default=24, ge=1, le=168)
 
 
+class ScrapeCreatorProfilesRequest(BaseModel):
+    user_id: str
+    creator_ids: list[str] | None = None
+
+
 class ActivityResponse(BaseModel):
     user_id: str
     creator_id: str
@@ -186,6 +191,25 @@ class BulkCreatorImportResponse(BaseModel):
     added_creators: list[CreatorResponse] = Field(default_factory=list)
     skipped_existing_creator_ids: list[str] = Field(default_factory=list)
     skipped_duplicate_creator_ids: list[str] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
+
+
+class CreatorProfileDetailsResponse(BaseModel):
+    user_id: str
+    creator_id: str
+    profile_url: str
+    name: str = ""
+    headline: str = ""
+    about: str = ""
+    experience: list[str] = Field(default_factory=list)
+    fetched_at: str = ""
+    source: str = "playwright"
+
+
+class ScrapeCreatorProfilesResponse(BaseModel):
+    user_id: str
+    checked_creator_ids: list[str]
+    profiles: list[CreatorProfileDetailsResponse] = Field(default_factory=list)
     errors: list[dict[str, str]] = Field(default_factory=list)
 
 

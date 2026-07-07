@@ -34,6 +34,9 @@ def init_state() -> None:
         "last_recent_scrape": None,
         "last_recent_db_activities": None,
         "last_bulk_import": None,
+        "last_profile_scrape": None,
+        "last_creator_profile_details": None,
+        "last_specific_creator_profile": None,
         "last_activity_thread": None,
     }
     for key, value in defaults.items():
@@ -369,6 +372,59 @@ def creator_label(creator: dict[str, Any]) -> str:
     creator_id = creator.get("creator_id", "")
     display = creator.get("display_name") or creator_id
     return f"{display} | {creator_id}"
+
+
+def profile_detail_label(profile: dict[str, Any]) -> str:
+    creator_id = profile.get("creator_id", "")
+    display = profile.get("name") or creator_id
+    headline = compact(profile.get("headline"), 48)
+    return " | ".join(part for part in [display, creator_id, headline] if part)
+
+
+def render_profile_detail(profile: dict[str, Any] | None, *, key_prefix: str) -> None:
+    if not profile:
+        return
+
+    with st.container(border=True):
+        top = st.columns([1.2, 2])
+        top[0].metric("Creator", profile.get("name") or profile.get("creator_id") or "")
+        top[1].metric("Fetched", short_time(profile.get("fetched_at")))
+        st.caption(
+            " | ".join(
+                item
+                for item in [
+                    f"Creator ID: {profile.get('creator_id', '')}",
+                    f"Source: {profile.get('source', '')}",
+                ]
+                if item.strip(": ")
+            )
+        )
+        st.text_input(
+            "Name",
+            value=profile.get("name", ""),
+            key=f"{key_prefix}_name_{profile.get('creator_id', '')}",
+        )
+        st.text_area(
+            "Headline",
+            value=profile.get("headline", ""),
+            height=90,
+            key=f"{key_prefix}_headline_{profile.get('creator_id', '')}",
+        )
+        st.text_area(
+            "About",
+            value=profile.get("about", ""),
+            height=180,
+            key=f"{key_prefix}_about_{profile.get('creator_id', '')}",
+        )
+        experience = profile.get("experience") or []
+        st.text_area(
+            "Experience",
+            value="\n\n".join(str(item) for item in experience),
+            height=220,
+            key=f"{key_prefix}_experience_{profile.get('creator_id', '')}",
+        )
+        if profile.get("profile_url"):
+            st.link_button("Open LinkedIn profile", profile["profile_url"])
 
 
 def render_thread(
@@ -963,6 +1019,140 @@ def render_bulk_import_tab(selected_user_id: str) -> None:
         st.dataframe(result["errors"], width="stretch", hide_index=True)
 
 
+def render_profile_scrape_tab(selected_user_id: str, user_data: dict[str, Any] | None) -> None:
+    st.subheader("Profile Scrape")
+    if not selected_user_id:
+        st.info("Select a user first.")
+        return
+
+    creators = (user_data or {}).get("creators") or get_or_default(
+        f"/users/{selected_user_id}/creators",
+        [],
+        params={"limit": 100},
+    )
+    creator_ids = [creator.get("creator_id", "") for creator in creators if creator.get("creator_id")]
+
+    with st.container(border=True):
+        selected_creator_ids = st.multiselect(
+            "Creators",
+            creator_ids,
+            default=creator_ids[: min(3, len(creator_ids))],
+            key="profile_scrape_creators",
+        )
+        if st.button("Scrape profile details", type="primary", disabled=not creator_ids):
+            try:
+                with st.spinner("Scraping creator profile details..."):
+                    result = request_json(
+                        "POST",
+                        "/creators/profile-details/scrape",
+                        payload={
+                            "user_id": selected_user_id,
+                            "creator_ids": selected_creator_ids or None,
+                        },
+                        timeout=LONG_REQUEST_TIMEOUT,
+                    )
+                st.session_state.last_profile_scrape = result
+                st.success(f"Scraped {len(result.get('profiles', []))} creator profile(s).")
+            except ApiError as exc:
+                show_api_error(exc)
+
+    result = st.session_state.last_profile_scrape
+    if not result:
+        return
+
+    with st.container(border=True):
+        st.markdown("**Latest Profile Scrape**")
+        st.caption(f"Checked: {', '.join(result.get('checked_creator_ids', []))}")
+        if result.get("errors"):
+            st.warning("Some creators returned errors.")
+            st.dataframe(result["errors"], width="stretch", hide_index=True)
+
+        profiles = result.get("profiles", [])
+        if profiles:
+            st.dataframe(
+                [
+                    {
+                        "creator": item.get("creator_id"),
+                        "name": item.get("name"),
+                        "headline": compact(item.get("headline"), 100),
+                        "about": compact(item.get("about"), 120),
+                        "experience_count": len(item.get("experience") or []),
+                        "fetched": short_time(item.get("fetched_at")),
+                    }
+                    for item in profiles
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+            selected_profile = st.selectbox("Scraped profile", profiles, format_func=profile_detail_label)
+            render_profile_detail(selected_profile, key_prefix="profile_scrape_detail")
+
+
+def render_creator_details_tab(selected_user_id: str) -> None:
+    st.subheader("Creator Details")
+    if not selected_user_id:
+        st.info("Select a user first.")
+        return
+
+    with st.container(border=True):
+        cols = st.columns([1, 1, 2])
+        limit = cols[0].number_input(
+            "Limit",
+            min_value=1,
+            max_value=500,
+            value=100,
+            step=10,
+            key="creator_profile_details_limit",
+        )
+        if cols[1].button("Load all details", type="primary"):
+            try:
+                result = request_json(
+                    "GET",
+                    f"/users/{selected_user_id}/creators/profile-details",
+                    params={"limit": int(limit)},
+                )
+                st.session_state.last_creator_profile_details = result
+                st.success(f"Loaded {len(result)} creator detail record(s).")
+            except ApiError as exc:
+                show_api_error(exc)
+
+    profiles = st.session_state.last_creator_profile_details or []
+    if profiles:
+        st.dataframe(
+            [
+                {
+                    "creator": item.get("creator_id"),
+                    "name": item.get("name"),
+                    "headline": compact(item.get("headline"), 100),
+                    "fetched": short_time(item.get("fetched_at")),
+                    "profile_url": item.get("profile_url"),
+                }
+                for item in profiles
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+        selected_profile = st.selectbox("Creator profile", profiles, format_func=profile_detail_label)
+        if st.button("Fetch selected creator details"):
+            try:
+                specific = request_json(
+                    "GET",
+                    f"/users/{selected_user_id}/creators/{selected_profile.get('creator_id')}/profile-details",
+                )
+                st.session_state.last_specific_creator_profile = specific
+                st.success("Creator details loaded.")
+            except ApiError as exc:
+                show_api_error(exc)
+
+        render_profile_detail(
+            st.session_state.last_specific_creator_profile or selected_profile,
+            key_prefix="creator_details_saved",
+        )
+    else:
+        st.info("No creator profile details loaded yet.")
+
+
 def render_recent_scrape_tab(selected_user_id: str, user_data: dict[str, Any] | None) -> None:
     st.subheader("24h Scrape")
     if not selected_user_id:
@@ -1425,6 +1615,8 @@ def main() -> None:
             "Modify",
             "Creators",
             "Bulk Import",
+            "Profile Scrape",
+            "Creator Details",
             "24h Scrape",
             "24h Saved",
             "Activity",
@@ -1445,16 +1637,20 @@ def main() -> None:
     with tabs[4]:
         render_bulk_import_tab(selected_user_id)
     with tabs[5]:
-        render_recent_scrape_tab(selected_user_id, user_data)
+        render_profile_scrape_tab(selected_user_id, user_data)
     with tabs[6]:
-        render_recent_db_tab(selected_user_id)
+        render_creator_details_tab(selected_user_id)
     with tabs[7]:
-        render_activity_tab(selected_user_id, user_data)
+        render_recent_scrape_tab(selected_user_id, user_data)
     with tabs[8]:
-        render_comments_tab(selected_user_id, user_data, comment_topics)
+        render_recent_db_tab(selected_user_id)
     with tabs[9]:
-        render_history_tab(selected_user_id)
+        render_activity_tab(selected_user_id, user_data)
     with tabs[10]:
+        render_comments_tab(selected_user_id, user_data, comment_topics)
+    with tabs[11]:
+        render_history_tab(selected_user_id)
+    with tabs[12]:
         render_profile_tab(users, selected_user_id)
 
 

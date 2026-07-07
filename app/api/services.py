@@ -19,6 +19,7 @@ from app.api.schemas import (
     BulkCreatorImportResponse,
     CommentResponse,
     CommentedActivityResponse,
+    CreatorProfileDetailsResponse,
     CreatorResponse,
     GenerateCommentRequest,
     GenerateFromActivityRequest,
@@ -28,6 +29,8 @@ from app.api.schemas import (
     RecentActivitiesResponse,
     RecentScrapeCreatorsRequest,
     RecentScrapeCreatorsResponse,
+    ScrapeCreatorProfilesRequest,
+    ScrapeCreatorProfilesResponse,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
     ThreadResponse,
@@ -47,7 +50,7 @@ from app.creator_tracking import get_profile_id, normalize_linkedin_profile_url
 from app.db.dynamodb import DynamoRepository
 from app.graph_state import run_post_chat_edit, run_post_generation
 from app.langchain_deep_search import research_trending_topics
-from app.linkedin_playwright_scraper import fetch_recent_profile_posts
+from app.linkedin_playwright_scraper import fetch_profile_details, fetch_recent_profile_posts
 from app.llms.llm import LLMConfig, invoke_structured
 from app.llms.llm_structure_schema import GeneratedComment
 from app.llms.prompts import COMMENT_GENERATION_SYSTEM_PROMPT, COMMENT_GENERATION_USER_PROMPT
@@ -415,6 +418,125 @@ def create_creator(repo: DynamoRepository, user_id: str, profile_url: str) -> Cr
 
 def creator_response(creator: dict[str, Any]) -> CreatorResponse:
     return CreatorResponse.model_validate(creator)
+
+
+def _creator_profile_details_response(creator: dict[str, Any]) -> CreatorProfileDetailsResponse:
+    details = dict(creator.get("profile_details") or {})
+    return CreatorProfileDetailsResponse(
+        user_id=str(creator.get("user_id", "")),
+        creator_id=str(creator.get("creator_id", "")),
+        profile_url=str(creator.get("profile_url", "")),
+        name=str(details.get("name", "")),
+        headline=str(details.get("headline", "")),
+        about=str(details.get("about", "")),
+        experience=[
+            str(item).strip()
+            for item in details.get("experience", [])
+            if str(item).strip()
+        ]
+        if isinstance(details.get("experience", []), list)
+        else [],
+        fetched_at=str(details.get("fetched_at", "")),
+        source=str(details.get("source", "playwright")),
+    )
+
+
+def _normalize_profile_details(raw_details: dict[str, Any]) -> dict[str, Any]:
+    experience = raw_details.get("experience", [])
+    if not isinstance(experience, list):
+        experience = []
+    return {
+        "name": str(raw_details.get("name", "")).strip(),
+        "headline": str(raw_details.get("headline", "")).strip(),
+        "about": str(raw_details.get("about", "")).strip(),
+        "experience": [str(item).strip() for item in experience if str(item).strip()],
+        "fetched_at": str(raw_details.get("fetched_at", now_iso())),
+        "source": str(raw_details.get("source", "playwright")),
+    }
+
+
+def get_creator_profile_details(
+    repo: DynamoRepository,
+    user_id: str,
+    creator_id: str,
+) -> CreatorProfileDetailsResponse:
+    require_user(repo, user_id)
+    creator = repo.get_creator(user_id, creator_id)
+    if not creator:
+        raise KeyError(f"Creator not found: {creator_id}")
+    return _creator_profile_details_response(creator)
+
+
+def list_creator_profile_details(
+    repo: DynamoRepository,
+    user_id: str,
+    limit: int | None = None,
+) -> list[CreatorProfileDetailsResponse]:
+    require_user(repo, user_id)
+    return [
+        _creator_profile_details_response(creator)
+        for creator in repo.list_creators(user_id, limit or CREATOR_IMPORT_EXISTING_LIMIT)
+    ]
+
+
+def scrape_creator_profile_details(
+    repo: DynamoRepository,
+    request: ScrapeCreatorProfilesRequest,
+) -> ScrapeCreatorProfilesResponse:
+    require_user(repo, request.user_id)
+    creators = repo.list_creators(request.user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
+    if request.creator_ids:
+        creator_id_set = set(request.creator_ids)
+        creators = [creator for creator in creators if creator["creator_id"] in creator_id_set]
+
+    errors: list[dict[str, str]] = []
+    profiles: list[CreatorProfileDetailsResponse] = []
+
+    def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        return creator, fetch_profile_details(creator["profile_url"])
+
+    max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
+    if max_workers == 1 and len(creators) > 1:
+        print("Running creator profile scrapes sequentially because the active LinkedIn mode uses a shared browser profile.")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
+        for future in as_completed(future_map):
+            creator = future_map[future]
+            timestamp = now_iso()
+            try:
+                _, raw_details = future.result()
+            except Exception as exc:
+                errors.append({"creator_id": creator["creator_id"], "message": str(exc)})
+                continue
+
+            if raw_details.get("error"):
+                errors.append(
+                    {
+                        "creator_id": creator["creator_id"],
+                        "message": str(raw_details.get("message") or raw_details.get("error")),
+                    }
+                )
+                creator["profile_details_checked_at"] = timestamp
+                creator["updated_at"] = timestamp
+                repo.put_creator(creator)
+                continue
+
+            details = _normalize_profile_details(raw_details)
+            creator["profile_details"] = details
+            creator["profile_details_checked_at"] = details.get("fetched_at") or timestamp
+            if details.get("name"):
+                creator["display_name"] = details["name"]
+            creator["updated_at"] = timestamp
+            saved_creator = repo.put_creator(creator)
+            profiles.append(_creator_profile_details_response(saved_creator))
+
+    return ScrapeCreatorProfilesResponse(
+        user_id=request.user_id,
+        checked_creator_ids=[creator["creator_id"] for creator in creators],
+        profiles=profiles,
+        errors=errors,
+    )
 
 
 def _activity_response(activity: dict[str, Any]) -> ActivityResponse:

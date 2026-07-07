@@ -56,6 +56,10 @@ def _candidate_activity_urls(profile_url: str) -> list[str]:
     ]
 
 
+def _experience_url(profile_url: str) -> str:
+    return f"{profile_url.strip().rstrip('/')}/details/experience/"
+
+
 def _activity_urn(*values: object) -> str:
     for value in values:
         match = _ACTIVITY_RE.search(str(value or ""))
@@ -258,6 +262,132 @@ def _extract_posts_from_page(page: Any, max_posts: int) -> list[dict[str, Any]]:
     return posts
 
 
+def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
+    script = r"""
+    () => {
+      const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+      const lines = (node) => (node && node.innerText || '')
+        .split('\n')
+        .map((part) => clean(part))
+        .filter(Boolean);
+      const firstText = (selectors) => {
+        for (const selector of selectors) {
+          const node = document.querySelector(selector);
+          const text = clean(node && node.innerText);
+          if (text) return text;
+        }
+        return '';
+      };
+      const sectionText = (labels) => {
+        const sections = Array.from(document.querySelectorAll('main section, section, div[data-view-name]'));
+        for (const section of sections) {
+          const sectionLines = lines(section);
+          if (!sectionLines.length) continue;
+          const first = sectionLines[0].toLowerCase();
+          if (!labels.includes(first)) continue;
+          return sectionLines
+            .slice(1)
+            .filter((part) => !['show all', 'show more', 'see more'].includes(part.toLowerCase()))
+            .join('\n');
+        }
+        return '';
+      };
+      const topCard = () => {
+        const sections = Array.from(document.querySelectorAll('main section'));
+        for (const section of sections) {
+          const sectionLines = lines(section);
+          if (sectionLines.length < 2) continue;
+          const first = sectionLines[0].toLowerCase();
+          if (['about', 'services', 'featured', 'activity', 'experience'].includes(first)) continue;
+          if (first.includes('people who') || first.includes('ad options')) continue;
+          const joined = sectionLines.join(' ').toLowerCase();
+          if (!joined.includes('contact info') && !joined.includes('followers') && !joined.includes('message')) continue;
+          return {
+            name: sectionLines[0] || '',
+            headline: sectionLines[1] || ''
+          };
+        }
+        return { name: '', headline: '' };
+      };
+
+      const card = topCard();
+      const name = firstText([
+        'main h1',
+        '.top-card-layout__title',
+        '.pv-text-details__left-panel h1',
+        'h1'
+      ]) || card.name;
+      const headline = firstText([
+        '.text-body-medium.break-words',
+        '.top-card-layout__headline',
+        '.pv-text-details__left-panel .text-body-medium',
+        'main section div.text-body-medium'
+      ]) || card.headline;
+      const about = sectionText(['about']);
+
+      return { name, headline, about };
+    }
+    """
+    try:
+        details = page.evaluate(script)
+    except Exception as exc:
+        print(f"LinkedIn profile details extraction failed: {exc}")
+        return {}
+    return details if isinstance(details, dict) else {}
+
+
+def _extract_experience_from_page(page: Any) -> list[str]:
+    script = r"""
+    () => {
+      const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+      const lines = (node) => (node && node.innerText || '')
+        .split('\n')
+        .map((part) => clean(part))
+        .filter(Boolean);
+      const roots = new Set();
+      const selectors = [
+        'main li.pvs-list__paged-list-item',
+        'main section li',
+        '.experience__list li',
+        '.profile-section-card'
+      ];
+
+      for (const selector of selectors) {
+        document.querySelectorAll(selector).forEach((node) => roots.add(node));
+      }
+
+      const items = [];
+      roots.forEach((node) => {
+        const text = clean(node.innerText);
+        if (!text || text.length < 12) return;
+        const lower = text.toLowerCase();
+        if (lower.includes('show all') || lower.includes('skills:')) return;
+        items.push(text);
+      });
+
+      if (items.length) return Array.from(new Set(items)).slice(0, 12);
+
+      const sections = Array.from(document.querySelectorAll('main section, section'));
+      for (const section of sections) {
+        const sectionLines = lines(section);
+        if (!sectionLines.length || sectionLines[0].toLowerCase() !== 'experience') continue;
+        const experienceLines = sectionLines
+          .slice(1)
+          .filter((part) => !['show all', 'show more', 'see more'].includes(part.toLowerCase()));
+        return experienceLines.length ? [experienceLines.join('\n')] : [];
+      }
+
+      return [];
+    }
+    """
+    try:
+        experience = page.evaluate(script)
+    except Exception as exc:
+        print(f"LinkedIn experience extraction failed: {exc}")
+        return []
+    return [str(item).strip() for item in experience if str(item).strip()] if isinstance(experience, list) else []
+
+
 def _open_context(playwright: Any, mode: str) -> tuple[Any | None, Any]:
     if mode == "burner":
         context = playwright.chromium.launch_persistent_context(
@@ -329,6 +459,80 @@ def fetch_recent_profile_posts(profile_url: str, max_posts: int = 5) -> list[dic
             return _error("no_visible_posts", "No visible LinkedIn posts were found for this profile.")
     except Exception as exc:
         return _error("playwright_run_failed", f"Playwright browser run failed: {exc}")
+    finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
+def fetch_profile_details(profile_url: str) -> dict[str, Any]:
+    mode = LINKEDIN_AUTOMATION_MODE.strip().lower()
+    if mode not in {"logged_out", "burner"}:
+        return _error("invalid_automation_mode", "LINKEDIN_AUTOMATION_MODE must be 'logged_out' or 'burner'.")[0]
+
+    if mode == "burner" and not has_bootstrapped_burner_session():
+        return _error("burner_session_not_found", BOOTSTRAP_REQUIRED_MESSAGE)[0]
+
+    print(f"Starting read-only LinkedIn profile detail scrape in {mode} mode.")
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        return _error("playwright_unavailable", f"Playwright is not available: {exc}")[0]
+
+    browser = None
+    context = None
+    try:
+        with sync_playwright() as playwright:
+            browser, context = _open_context(playwright, mode)
+            page = context.new_page()
+            profile_url = profile_url.strip().rstrip("/") + "/"
+
+            print(f"Opening LinkedIn profile URL: {profile_url}")
+            page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+            if mode == "burner" and looks_like_login_or_challenge_page(page):
+                return _error("session_expired_or_challenged", SESSION_EXPIRED_MESSAGE)[0]
+            if mode == "logged_out" and _has_login_wall(page):
+                return _error("linkedin_profile_unavailable", "LinkedIn hid profile details behind a login wall.")[0]
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            _random_pause()
+
+            details = _extract_profile_details_from_page(page)
+            experience: list[str] = []
+
+            try:
+                page.goto(_experience_url(profile_url), wait_until="domcontentloaded", timeout=30000)
+                if mode == "burner" and looks_like_login_or_challenge_page(page):
+                    return _error("session_expired_or_challenged", SESSION_EXPIRED_MESSAGE)[0]
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                _random_pause()
+                experience = _extract_experience_from_page(page)
+            except Exception as exc:
+                print(f"Could not read LinkedIn experience page: {exc}")
+
+            return {
+                "name": _clean_text(str(details.get("name", ""))),
+                "headline": _clean_text(str(details.get("headline", ""))),
+                "about": _clean_text(str(details.get("about", ""))),
+                "experience": experience,
+                "fetched_at": _now(),
+                "source": "playwright",
+            }
+    except Exception as exc:
+        return _error("playwright_run_failed", f"Playwright browser run failed: {exc}")[0]
     finally:
         if context is not None:
             try:

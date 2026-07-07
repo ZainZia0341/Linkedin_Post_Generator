@@ -14,6 +14,7 @@ from app.api.schemas import (
     CommentResponse,
     CommentedActivityResponse,
     CreatorCreateRequest,
+    CreatorProfileDetailsResponse,
     CreatorResponse,
     DeleteResponse,
     GenerateCommentRequest,
@@ -24,6 +25,8 @@ from app.api.schemas import (
     RecentActivitiesResponse,
     RecentScrapeCreatorsRequest,
     RecentScrapeCreatorsResponse,
+    ScrapeCreatorProfilesRequest,
+    ScrapeCreatorProfilesResponse,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
     ThreadResponse,
@@ -43,12 +46,15 @@ from app.api.services import (
     generate_comment,
     generate_from_activity,
     generate_post,
+    get_creator_profile_details,
     import_creators_from_file,
     list_commented_activities,
     list_all_activities,
+    list_creator_profile_details,
     list_recent_activities_from_db,
     mark_activity_commented,
     modify_post,
+    scrape_creator_profile_details,
     scrape_creators_recent_24h,
     seed_default_users,
     thread_response,
@@ -304,6 +310,17 @@ async def import_creators_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/creators/profile-details/scrape", response_model=ScrapeCreatorProfilesResponse)
+def scrape_creator_profiles_endpoint(
+    payload: ScrapeCreatorProfilesRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ScrapeCreatorProfilesResponse:
+    try:
+        return scrape_creator_profile_details(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
 @app.get("/users/{user_id}/creators", response_model=list[CreatorResponse])
 def list_creators(
     user_id: str,
@@ -313,6 +330,30 @@ def list_creators(
     if not repo.get_user(user_id):
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
     return [CreatorResponse.model_validate(creator) for creator in repo.list_creators(user_id, limit)]
+
+
+@app.get("/users/{user_id}/creators/profile-details", response_model=list[CreatorProfileDetailsResponse])
+def list_user_creator_profile_details(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=500),
+) -> list[CreatorProfileDetailsResponse]:
+    try:
+        return list_creator_profile_details(repo, user_id, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/users/{user_id}/creators/{creator_id}/profile-details", response_model=CreatorProfileDetailsResponse)
+def get_user_creator_profile_details(
+    user_id: str,
+    creator_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CreatorProfileDetailsResponse:
+    try:
+        return get_creator_profile_details(repo, user_id, creator_id)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
 
 
 @app.delete("/users/{user_id}/creators/{creator_id}", response_model=DeleteResponse)
