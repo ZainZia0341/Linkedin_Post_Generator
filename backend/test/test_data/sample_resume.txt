@@ -1,0 +1,9 @@
+Mughees Khan
+AI Automation Developer
+
+Built Streamlit and LangChain applications for content generation workflows.
+Led implementation of Python automation tools that improved repeated research and writing tasks.
+Skills: Python, LangChain, LangGraph, Streamlit, SQL, Docker, MongoDB, Data Analysis.
+Education: Bachelor of Computer Science, Example University.
+Portfolio: https://example.com
+
