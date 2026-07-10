@@ -191,6 +191,18 @@ class BulkCreatorImportResponse(BaseModel):
     added_creators: list[CreatorResponse] = Field(default_factory=list)
     skipped_existing_creator_ids: list[str] = Field(default_factory=list)
     skipped_duplicate_creator_ids: list[str] = Field(default_factory=list)
+    skipped_existing_creators: list[dict[str, str]] = Field(default_factory=list)
+    skipped_duplicate_creators: list[dict[str, str]] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
+
+
+class BulkCreatorPreviewResponse(BaseModel):
+    user_id: str
+    total_urls: int = 0
+    corrected_creators: list[dict[str, str]] = Field(default_factory=list)
+    new_creators: list[dict[str, str]] = Field(default_factory=list)
+    existing_creators: list[dict[str, str]] = Field(default_factory=list)
+    duplicate_creators: list[dict[str, str]] = Field(default_factory=list)
     errors: list[dict[str, str]] = Field(default_factory=list)
 
 
@@ -201,6 +213,8 @@ class CreatorProfileDetailsResponse(BaseModel):
     name: str = ""
     headline: str = ""
     about: str = ""
+    location: str = ""
+    profile_image_url: str = ""
     experience: list[str] = Field(default_factory=list)
     fetched_at: str = ""
     source: str = "playwright"
@@ -213,8 +227,22 @@ class ScrapeCreatorProfilesResponse(BaseModel):
     errors: list[dict[str, str]] = Field(default_factory=list)
 
 
+class DashboardStatsResponse(BaseModel):
+    creator_count: int = 0
+    thread_count: int = 0
+    activity_count: int = 0
+    new_posts_today_count: int = 0
+    new_posts_from_last_scrape_count: int = 0
+    needs_scraping_count: int = 0
+    recently_added_count: int = 0
+    recently_added_window_days: int = 7
+    scraping_stale_after_hours: int = 24
+    updated_at: str = ""
+
+
 class UserDataResponse(BaseModel):
     user: UserResponse
+    dashboard_stats: DashboardStatsResponse = Field(default_factory=DashboardStatsResponse)
     creators: list[CreatorResponse] = Field(default_factory=list)
     threads: list[ThreadSummary] = Field(default_factory=list)
     recent_activities: list[ActivityResponse] = Field(default_factory=list)

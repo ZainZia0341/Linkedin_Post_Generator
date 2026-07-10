@@ -278,6 +278,17 @@ def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
         }
         return '';
       };
+      const firstAttr = (selectors, attrs) => {
+        for (const selector of selectors) {
+          const node = document.querySelector(selector);
+          if (!node) continue;
+          for (const attr of attrs) {
+            const value = clean(node.getAttribute(attr));
+            if (value) return value;
+          }
+        }
+        return '';
+      };
       const sectionText = (labels) => {
         const sections = Array.from(document.querySelectorAll('main section, section, div[data-view-name]'));
         for (const section of sections) {
@@ -302,12 +313,18 @@ def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
           if (first.includes('people who') || first.includes('ad options')) continue;
           const joined = sectionLines.join(' ').toLowerCase();
           if (!joined.includes('contact info') && !joined.includes('followers') && !joined.includes('message')) continue;
+          const ignored = ['contact info', 'followers', 'connections', 'message', 'connect', 'follow'];
+          const location = sectionLines.find((part, index) => {
+            const lower = part.toLowerCase();
+            return index > 1 && !ignored.some((token) => lower.includes(token));
+          }) || '';
           return {
             name: sectionLines[0] || '',
-            headline: sectionLines[1] || ''
+            headline: sectionLines[1] || '',
+            location
           };
         }
-        return { name: '', headline: '' };
+        return { name: '', headline: '', location: '' };
       };
 
       const card = topCard();
@@ -323,9 +340,24 @@ def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
         '.pv-text-details__left-panel .text-body-medium',
         'main section div.text-body-medium'
       ]) || card.headline;
+      const location = firstText([
+        '.pv-text-details__left-panel .text-body-small.inline.t-black--light.break-words',
+        '.pv-text-details__left-panel .text-body-small.t-black--light',
+        '.top-card-layout__first-subline',
+        'main section .text-body-small.inline.t-black--light.break-words'
+      ]) || card.location;
+      const profileImageUrl = firstAttr([
+        'img.pv-top-card-profile-picture__image--show',
+        '.pv-top-card-profile-picture__container img',
+        '.pv-top-card-profile-picture__image img',
+        '.profile-photo-edit__preview',
+        '.top-card-layout__entity-image',
+        'main section img[alt*="profile" i]',
+        'main section img[alt*="photo" i]'
+      ], ['src', 'data-delayed-url', 'data-ghost-url']);
       const about = sectionText(['about']);
 
-      return { name, headline, about };
+      return { name, headline, about, location, profile_image_url: profileImageUrl };
     }
     """
     try:
@@ -527,6 +559,8 @@ def fetch_profile_details(profile_url: str) -> dict[str, Any]:
                 "name": _clean_text(str(details.get("name", ""))),
                 "headline": _clean_text(str(details.get("headline", ""))),
                 "about": _clean_text(str(details.get("about", ""))),
+                "location": _clean_text(str(details.get("location", ""))),
+                "profile_image_url": str(details.get("profile_image_url", "")).strip(),
                 "experience": experience,
                 "fetched_at": _now(),
                 "source": "playwright",

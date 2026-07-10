@@ -14,7 +14,7 @@ DEFAULT_API_BASE_URL = (
     or "http://localhost:7860"
 )
 REQUEST_TIMEOUT = 180.0
-LONG_REQUEST_TIMEOUT = 900.0
+LONG_REQUEST_TIMEOUT = 3600.0
 
 
 class ApiError(Exception):

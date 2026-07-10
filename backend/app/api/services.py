@@ -17,10 +17,12 @@ from app.api.schemas import (
     BrainstormRequest,
     BrainstormResponse,
     BulkCreatorImportResponse,
+    BulkCreatorPreviewResponse,
     CommentResponse,
     CommentedActivityResponse,
     CreatorProfileDetailsResponse,
     CreatorResponse,
+    DashboardStatsResponse,
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
@@ -67,6 +69,8 @@ POST_CREATION_ACTIONS = generation_style_labels()
 COMMENT_TOPICS = ["Add Value", "Congratulate", "Agree", "Disagree", "Challenge", "Expert Insight"]
 LINKEDIN_URL_RE = re.compile(r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?linkedin\.com(?:/[^\s<>'\"]*)?", flags=re.I)
 CREATOR_IMPORT_EXISTING_LIMIT = 1000
+RECENTLY_ADDED_WINDOW_DAYS = 7
+SCRAPING_STALE_AFTER_HOURS = 24
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -429,6 +433,8 @@ def _creator_profile_details_response(creator: dict[str, Any]) -> CreatorProfile
         name=str(details.get("name", "")),
         headline=str(details.get("headline", "")),
         about=str(details.get("about", "")),
+        location=str(details.get("location", "")),
+        profile_image_url=str(details.get("profile_image_url", "")),
         experience=[
             str(item).strip()
             for item in details.get("experience", [])
@@ -449,6 +455,8 @@ def _normalize_profile_details(raw_details: dict[str, Any]) -> dict[str, Any]:
         "name": str(raw_details.get("name", "")).strip(),
         "headline": str(raw_details.get("headline", "")).strip(),
         "about": str(raw_details.get("about", "")).strip(),
+        "location": str(raw_details.get("location", "")).strip(),
+        "profile_image_url": str(raw_details.get("profile_image_url", "")).strip(),
         "experience": [str(item).strip() for item in experience if str(item).strip()],
         "fetched_at": str(raw_details.get("fetched_at", now_iso())),
         "source": str(raw_details.get("source", "playwright")),
@@ -667,6 +675,8 @@ def import_creators_from_file(
     added_creators: list[CreatorResponse] = []
     skipped_existing_creator_ids: list[str] = []
     skipped_duplicate_creator_ids: list[str] = []
+    skipped_existing_creators: list[dict[str, str]] = []
+    skipped_duplicate_creators: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
 
     for candidate in candidates:
@@ -681,9 +691,27 @@ def import_creators_from_file(
 
         if creator_id in file_creator_ids:
             _append_unique(skipped_duplicate_creator_ids, creator_id)
+            skipped_duplicate_creators.append(
+                {
+                    "row": row_label,
+                    "url": raw_url,
+                    "normalized_url": normalized_url,
+                    "creator_id": creator_id,
+                    "reason": "Duplicate URL in uploaded file",
+                }
+            )
             continue
         if creator_id in existing_creator_ids:
             _append_unique(skipped_existing_creator_ids, creator_id)
+            skipped_existing_creators.append(
+                {
+                    "row": row_label,
+                    "url": raw_url,
+                    "normalized_url": normalized_url,
+                    "creator_id": creator_id,
+                    "reason": "Already tracked in database",
+                }
+            )
             continue
 
         creator = create_creator(repo, user_id, normalized_url)
@@ -699,6 +727,66 @@ def import_creators_from_file(
         added_creators=added_creators,
         skipped_existing_creator_ids=skipped_existing_creator_ids,
         skipped_duplicate_creator_ids=skipped_duplicate_creator_ids,
+        skipped_existing_creators=skipped_existing_creators,
+        skipped_duplicate_creators=skipped_duplicate_creators,
+        errors=errors,
+    )
+
+
+def preview_creators_from_file(
+    repo: DynamoRepository,
+    user_id: str,
+    file_name: str,
+    content: bytes,
+) -> BulkCreatorPreviewResponse:
+    require_user(repo, user_id)
+    candidates = _creator_url_candidates_from_file(file_name, content)
+    existing_creators = repo.list_creators(user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
+    existing_creator_ids = {creator.get("creator_id", "") for creator in existing_creators}
+    file_creator_ids: set[str] = set()
+    corrected_creators: list[dict[str, str]] = []
+    new_creators: list[dict[str, str]] = []
+    existing_preview_creators: list[dict[str, str]] = []
+    duplicate_creators: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+
+    for candidate in candidates:
+        row_label = candidate.get("row", "")
+        raw_url = candidate.get("url", "")
+        try:
+            normalized_url = normalize_linkedin_profile_url(raw_url)
+            creator_id = get_profile_id(normalized_url)
+        except ValueError as exc:
+            errors.append({"row": row_label, "url": raw_url, "message": str(exc)})
+            continue
+
+        item = {
+            "row": row_label,
+            "url": raw_url,
+            "normalized_url": normalized_url,
+            "creator_id": creator_id,
+        }
+        if creator_id in file_creator_ids:
+            duplicate_creators.append({**item, "reason": "Duplicate URL in uploaded file"})
+            continue
+
+        corrected_creators.append(item)
+        file_creator_ids.add(creator_id)
+        if creator_id in existing_creator_ids:
+            existing_preview_creators.append({**item, "reason": "Already tracked in database"})
+        else:
+            new_creators.append(item)
+
+    if not candidates:
+        errors.append({"row": "", "url": "", "message": "No LinkedIn creator URLs were found in the uploaded file."})
+
+    return BulkCreatorPreviewResponse(
+        user_id=user_id,
+        total_urls=len(candidates),
+        corrected_creators=corrected_creators,
+        new_creators=new_creators,
+        existing_creators=existing_preview_creators,
+        duplicate_creators=duplicate_creators,
         errors=errors,
     )
 
@@ -929,6 +1017,47 @@ def list_all_activities(repo: DynamoRepository, user_id: str, limit: int | None 
             for activity in repo.list_creator_activities(user_id, creator["creator_id"], limit or API_LIST_LIMIT)
     )
     return activities[: limit or API_LIST_LIMIT]
+
+
+def _activity_to_dict(activity: ActivityResponse | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(activity, dict):
+        return activity
+    return activity.model_dump()
+
+
+def _creator_needs_scraping(creator: dict[str, Any], now: datetime) -> bool:
+    last_checked = _parse_activity_datetime(creator.get("last_checked_at"))
+    if last_checked is None:
+        return True
+    return last_checked <= now - timedelta(hours=SCRAPING_STALE_AFTER_HOURS)
+
+
+def _creator_recently_added(creator: dict[str, Any], now: datetime) -> bool:
+    added_at = _parse_activity_datetime(creator.get("added_at"))
+    if added_at is None:
+        return False
+    return added_at >= now - timedelta(days=RECENTLY_ADDED_WINDOW_DAYS)
+
+
+def build_dashboard_stats(
+    creators: list[dict[str, Any]],
+    threads: list[dict[str, Any]],
+    activities: list[ActivityResponse | dict[str, Any]],
+) -> DashboardStatsResponse:
+    now = datetime.now(UTC)
+    activity_dicts = [_activity_to_dict(activity) for activity in activities]
+    return DashboardStatsResponse(
+        creator_count=len(creators),
+        thread_count=len(threads),
+        activity_count=len(activity_dicts),
+        new_posts_today_count=sum(1 for activity in activity_dicts if _is_post_inside_window(activity, 24)),
+        new_posts_from_last_scrape_count=sum(int(creator.get("new_count") or 0) for creator in creators),
+        needs_scraping_count=sum(1 for creator in creators if _creator_needs_scraping(creator, now)),
+        recently_added_count=sum(1 for creator in creators if _creator_recently_added(creator, now)),
+        recently_added_window_days=RECENTLY_ADDED_WINDOW_DAYS,
+        scraping_stale_after_hours=SCRAPING_STALE_AFTER_HOURS,
+        updated_at=now.isoformat(),
+    )
 
 
 def list_recent_activities_from_db(

@@ -11,6 +11,7 @@ from app.api.schemas import (
     BrainstormRequest,
     BrainstormResponse,
     BulkCreatorImportResponse,
+    BulkCreatorPreviewResponse,
     CommentResponse,
     CommentedActivityResponse,
     CreatorCreateRequest,
@@ -41,6 +42,7 @@ from app.api.services import (
     POST_CREATION_ACTIONS,
     SAVED_ACTIONS,
     brainstorm,
+    build_dashboard_stats,
     create_creator,
     create_user,
     generate_comment,
@@ -54,6 +56,7 @@ from app.api.services import (
     list_recent_activities_from_db,
     mark_activity_commented,
     modify_post,
+    preview_creators_from_file,
     scrape_creator_profile_details,
     scrape_creators_recent_24h,
     seed_default_users,
@@ -167,16 +170,21 @@ def patch_user(
 def get_user_data(
     user_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
-    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=100),
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=1000),
 ) -> UserDataResponse:
     user = repo.get_user(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
-    creators = [CreatorResponse.model_validate(creator) for creator in repo.list_creators(user_id, limit)]
-    threads = [thread_summary(thread) for thread in repo.list_threads(user_id, limit)]
+    creator_records = repo.list_creators(user_id, limit)
+    thread_records = repo.list_threads(user_id, limit)
+    creators = [CreatorResponse.model_validate(creator) for creator in creator_records]
+    threads = [thread_summary(thread) for thread in thread_records]
     activities = list_all_activities(repo, user_id, limit)
+    dashboard_stats = build_dashboard_stats(creator_records, thread_records, activities)
+    repo.put_user({**user, "dashboard_stats": dashboard_stats.model_dump()})
     return UserDataResponse(
         user=user_response(user),
+        dashboard_stats=dashboard_stats,
         creators=creators,
         threads=threads,
         recent_activities=activities,
@@ -310,6 +318,21 @@ async def import_creators_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/creators/import/preview", response_model=BulkCreatorPreviewResponse)
+async def preview_creators_import_endpoint(
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    user_id: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+) -> BulkCreatorPreviewResponse:
+    try:
+        content = await file.read()
+        return preview_creators_from_file(repo, user_id, file.filename or "", content)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/creators/profile-details/scrape", response_model=ScrapeCreatorProfilesResponse)
 def scrape_creator_profiles_endpoint(
     payload: ScrapeCreatorProfilesRequest,
@@ -325,7 +348,7 @@ def scrape_creator_profiles_endpoint(
 def list_creators(
     user_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
-    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=100),
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=1000),
 ) -> list[CreatorResponse]:
     if not repo.get_user(user_id):
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
