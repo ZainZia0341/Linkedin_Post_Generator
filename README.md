@@ -1,22 +1,35 @@
----
-title: LinkedIn Post Generator API
-sdk: docker
-app_port: 7860
----
+# LinkedIn Post Generator
 
-# LinkedIn Post Generator API
+Monorepo for the LinkedIn Post Generator project.
+
+- `backend/` contains the FastAPI app, DynamoDB repository, scraping code,
+  current backend docs, tests, Docker files, and the old Streamlit UI.
+- `frontend/` is reserved for the upcoming Next.js web app.
+
+The Streamlit app is still present under `backend/streamlit_ui`, but it is now a
+legacy/dev UI. The product UI should be built in `frontend/`.
 
 ## Local Development
 
-Run these services in separate terminals from the project root.
+Run backend commands from the backend folder:
+
+```bash
+cd backend
+```
 
 ### Start DynamoDB Local
 
-Docker Desktop must be running before this command works. If DynamoDB Local is
-not reachable, API routes that need saved data return HTTP 503.
+Docker Desktop must be running before this command works. DynamoDB Local stores
+its files in `backend/dynamodb_localdb`.
 
 ```bash
 docker compose -f docker-compose.dynamodb.yml up -d
+```
+
+The compose file also starts DynamoDB Admin:
+
+```text
+http://localhost:8001
 ```
 
 ### Start FastAPI Backend
@@ -28,28 +41,34 @@ The API runs on `http://localhost:7860` and exposes docs at
 uv run uvicorn app.api.main:app --reload --host 127.0.0.1 --port 7860
 ```
 
-### Start Streamlit UI
+### Start Legacy Streamlit UI
 
-The UI runs on `http://localhost:8501` and calls the FastAPI backend at
-`http://localhost:7860` by default.
+This UI is kept for now but should not be treated as the future frontend.
 
 ```bash
 uv run streamlit run streamlit_ui/app.py --server.port 8501
 ```
 
-To point the UI at a different API URL:
+To point Streamlit at a different API URL:
 
-```bash
+```powershell
 $env:LINKEDIN_API_BASE_URL="http://localhost:7860"
 uv run streamlit run streamlit_ui/app.py --server.port 8501
 ```
 
 ### Quick Checks
 
+Run these from `backend/`:
+
 ```bash
 curl http://localhost:7860/health
-curl http://localhost:8501
 aws dynamodb list-tables --endpoint-url http://localhost:8000
+```
+
+If Streamlit is running:
+
+```bash
+curl http://localhost:8501
 ```
 
 ### Stop Services
@@ -57,11 +76,19 @@ aws dynamodb list-tables --endpoint-url http://localhost:8000
 If FastAPI or Streamlit are running in foreground terminals, press `Ctrl+C` in
 each terminal.
 
-Stop DynamoDB Local:
+Stop DynamoDB Local and DynamoDB Admin:
 
 ```bash
 docker compose -f docker-compose.dynamodb.yml stop
 ```
+
+Remove the containers without deleting local DB files:
+
+```bash
+docker compose -f docker-compose.dynamodb.yml down
+```
+
+Do not use `down -v` if you want to keep local database data.
 
 Stop FastAPI and Streamlit by port in PowerShell:
 
@@ -70,84 +97,106 @@ Get-NetTCPConnection -LocalPort 7860 -State Listen | ForEach-Object { Stop-Proce
 Get-NetTCPConnection -LocalPort 8501 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
-Remove the DynamoDB Local container instead of only stopping it:
+## Backend Tests
+
+Run from `backend/`:
 
 ```bash
-docker compose -f docker-compose.dynamodb.yml down
+uv run python -m compileall app streamlit_ui test scripts
+uv run pytest
 ```
 
-## Hugging Face Spaces Deployment
+## Frontend
 
-This repo is configured for a Docker Space with `app_port: 7860`.
-
-Inside the Space container:
-
-- Streamlit runs publicly on `0.0.0.0:7860`
-- FastAPI runs internally on `127.0.0.1:8001`
-- DynamoDB Local runs internally on `127.0.0.1:8000`
-- Streamlit calls FastAPI through `LINKEDIN_API_BASE_URL=http://127.0.0.1:8001`
-
-The Docker image starts all services with:
-
-```bash
-bash scripts/start_hf_space.sh
-```
-
-Deploy to the existing Space remote:
-
-```bash
-git push hf fastapi-dev:main
-```
-
-The Space URL is:
+The `frontend/` folder is ready for the Next.js app. The first frontend planning
+draft is:
 
 ```text
-https://huggingface.co/spaces/ZainZia/linkedin-post-generator
+frontend/docs/first_plan_draft.md
 ```
 
-### Space Secrets
+When the Next.js project is initialized, frontend commands should be run from
+`frontend/`.
 
-Do not commit `.env`. Add runtime secrets in the Space settings instead:
+### Start Next.js Frontend
+
+Install dependencies once:
+
+```bash
+cd frontend
+npm install
+```
+
+Start the dev server:
+
+```bash
+npm run dev
+```
+
+Open:
 
 ```text
-GOOGLE_API_KEY
-GROQ_API_KEY
-ANTHROPIC_API_KEY
-TAVILY_API_KEY
-DEFAULT_LLM_PROVIDER
-DEFAULT_LLM_MODEL
-LINKEDIN_AUTOMATION_MODE
-LINKEDIN_HEADLESS
+http://localhost:3000
 ```
 
-### DynamoDB Persistence
+The frontend proxies API requests through Next.js to FastAPI. By default it uses:
 
-DynamoDB Local stores data in `/data/dynamodb` when `/data` is available and
-writable. Attach persistent storage to the Space if you want users, threads,
-creators, and activities to survive Space restarts.
+```text
+API_BASE_URL=http://localhost:7860
+NEXT_PUBLIC_DEFAULT_USER_ID=test-user-1
+```
 
-If no persistent `/data` volume is attached, the app still works, but database
-files are written to `/tmp/dynamodb` and can be lost when the Space sleeps,
-restarts, or rebuilds.
+To override those values, create `frontend/.env.local` from
+`frontend/.env.example`.
+
+### Stop Next.js Frontend
+
+If it is running in a foreground terminal, press `Ctrl+C`.
+
+Stop by port in PowerShell:
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+### Frontend Checks
+
+Run from `frontend/`:
+
+```bash
+npm run typecheck
+npm run build
+```
 
 ## LinkedIn Burner Session Bootstrap
 
 The app does not automate LinkedIn login. For burner mode, create the isolated
-Playwright session once:
+Playwright session once from `backend/`:
 
 ```bash
 uv run python scripts/bootstrap_linkedin_session.py
 ```
 
 Log in manually in the opened browser window with a burner account only. After
-that, set `LINKEDIN_AUTOMATION_MODE=burner` and the API will reuse the isolated
-session in `schema/local_db/playwright/linkedin_burner_profile`.
+that, set `LINKEDIN_AUTOMATION_MODE=burner` in `backend/.env` and the API will
+reuse the isolated session in:
 
+```text
+backend/schema/local_db/playwright/linkedin_burner_profile
+```
 
+## Hugging Face Spaces Deployment
 
-Created private bucket:
-ZainZia/linkedin-post-generator-db
-Bucket URI:
-hf://buckets/ZainZia/linkedin-post-generator-db
+The Docker app files now live under `backend/`.
 
+For a Docker-based deployment, build from `backend/` or configure the platform to
+use `backend/Dockerfile` as the Dockerfile and `backend/` as the build context.
 
+The existing backend Docker image starts:
+
+- Streamlit publicly on `0.0.0.0:7860`
+- FastAPI internally on `127.0.0.1:8001`
+- DynamoDB Local internally on `127.0.0.1:8000`
+
+Deployment secrets should not be committed. Keep local secrets in
+`backend/.env`; configure production secrets in the hosting platform.
