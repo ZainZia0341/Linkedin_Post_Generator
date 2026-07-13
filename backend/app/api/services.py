@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import re
+import time
 from typing import Any
 from uuid import uuid4
 import zipfile
@@ -71,6 +72,7 @@ LINKEDIN_URL_RE = re.compile(r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?linkedin\.
 CREATOR_IMPORT_EXISTING_LIMIT = 1000
 RECENTLY_ADDED_WINDOW_DAYS = 7
 SCRAPING_STALE_AFTER_HOURS = 24
+DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS = 3
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -94,6 +96,12 @@ SAVED_ACTIONS = [
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _sleep_before_playwright_launch(launch_delay_seconds: float | int | None) -> None:
+    delay = DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS if launch_delay_seconds is None else float(launch_delay_seconds)
+    if delay > 0:
+        time.sleep(delay)
 
 
 def provider_model(provider: str | None, model: str | None) -> tuple[str, str]:
@@ -501,6 +509,7 @@ def scrape_creator_profile_details(
     profiles: list[CreatorProfileDetailsResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        _sleep_before_playwright_launch(request.launch_delay_seconds)
         return creator, fetch_profile_details(creator["profile_url"])
 
     max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
@@ -519,6 +528,17 @@ def scrape_creator_profile_details(
                 continue
 
             if raw_details.get("error"):
+                if raw_details.get("error") == "linkedin_profile_not_found":
+                    creator["profile_details"] = {
+                        "name": "",
+                        "headline": "Profile not found or unavailable",
+                        "about": str(raw_details.get("message") or ""),
+                        "location": "",
+                        "profile_image_url": "",
+                        "experience": [],
+                        "fetched_at": timestamp,
+                        "source": "playwright",
+                    }
                 errors.append(
                     {
                         "creator_id": creator["creator_id"],
@@ -877,6 +897,7 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
     new_activities: list[ActivityResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        _sleep_before_playwright_launch(request.launch_delay_seconds)
         posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
         return creator, posts
 
@@ -947,6 +968,7 @@ def scrape_creators_recent_24h(
     activities: list[ActivityResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        _sleep_before_playwright_launch(request.launch_delay_seconds)
         posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
         return creator, posts
 

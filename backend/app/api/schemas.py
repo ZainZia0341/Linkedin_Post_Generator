@@ -135,6 +135,7 @@ class ScrapeCreatorsRequest(BaseModel):
     user_id: str
     creator_ids: list[str] | None = None
     max_posts: int = 5
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
 
 
 class RecentScrapeCreatorsRequest(BaseModel):
@@ -142,11 +143,13 @@ class RecentScrapeCreatorsRequest(BaseModel):
     creator_ids: list[str] | None = None
     max_posts: int = 5
     window_hours: int = Field(default=24, ge=1, le=168)
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
 
 
 class ScrapeCreatorProfilesRequest(BaseModel):
     user_id: str
     creator_ids: list[str] | None = None
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
 
 
 class ActivityResponse(BaseModel):

@@ -33,6 +33,30 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _looks_like_connection_degree(text: str) -> bool:
+    return bool(re.fullmatch(r"[^A-Za-z0-9]*\d+(?:st|nd|rd|th)\s*", _clean_text(text), flags=re.I))
+
+
+def _looks_like_headline_saved_as_location(text: str) -> bool:
+    cleaned = _clean_text(text)
+    return bool(cleaned) and ("|" in cleaned or len(cleaned) > 70) and "," not in cleaned
+
+
+def _looks_like_invalid_profile_details(name: str, headline: str, location: str) -> bool:
+    combined = " ".join(_clean_text(value).lower() for value in (name, headline, location) if value)
+    if not _clean_text(name):
+        return True
+    invalid_phrases = (
+        "skip to main content",
+        "0 notifications",
+        "page not found",
+        "profile not found",
+        "this profile is not available",
+        "member not found",
+    )
+    return any(phrase in combined for phrase in invalid_phrases) or bool(re.search(r"\b\d+\s+notifications?\b", combined))
+
+
 def _content_hash(text: str) -> str:
     return hashlib.sha256(_clean_text(text).lower().encode("utf-8")).hexdigest()
 
@@ -278,6 +302,14 @@ def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
         }
         return '';
       };
+      const visible = (node) => {
+        if (!node || !node.getBoundingClientRect) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const imageUrl = (node) => clean(
+        node && (node.currentSrc || node.src || node.getAttribute('src') || node.getAttribute('data-delayed-url') || node.getAttribute('data-ghost-url'))
+      );
       const firstAttr = (selectors, attrs) => {
         for (const selector of selectors) {
           const node = document.querySelector(selector);
@@ -289,6 +321,86 @@ def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
         }
         return '';
       };
+      const h1 = document.querySelector('main h1') || document.querySelector('h1');
+      const h1Name = clean(h1 && h1.innerText);
+      const stripConnectionDegree = (text) => clean((text || '').replace(/\s+[^A-Za-z0-9]*\d+(st|nd|rd|th)$/i, ''));
+      const topCardRoot = (() => {
+        if (!h1) return document.querySelector('main') || document.body;
+        return h1.closest('section')
+          || h1.closest('[data-member-id]')
+          || h1.closest('[class*="top-card"]')
+          || h1.closest('main')
+          || document.querySelector('main')
+          || document.body;
+      })();
+      const isDegreeLine = (text) => /^[^A-Za-z0-9]*\d+(st|nd|rd|th)\s*$/i.test(text);
+      const isProfileCountLine = (text) => /\bfollowers?\b|\bconnections?\b/i.test(text);
+      const isActionLine = (text) => /^(message|pending|more|connect|follow|following|open to|add profile section|enhance profile|skip to main content|\d+\s+notifications?)$/i.test(text);
+      const isBadNameLine = (text) => {
+        const value = clean(text);
+        if (!value || value.length > 80) return true;
+        if (isDegreeLine(value) || isProfileCountLine(value) || isActionLine(value)) return true;
+        if (value.includes('|') || value.includes(',') || /contact info|linkedin|profile|followers|connections|notifications|skip to main content/i.test(value)) return true;
+        return false;
+      };
+      const cleanLocationLine = (text) => clean(text.replace(/\s*[^A-Za-z0-9]*\s*contact info.*$/i, ''));
+      const topCardLines = lines(topCardRoot);
+      const h1ProfileName = stripConnectionDegree(h1Name);
+      const inferredProfileName = (() => {
+        const candidates = [h1ProfileName, ...topCardLines.map(stripConnectionDegree)];
+        for (const candidate of candidates) {
+          if (!isBadNameLine(candidate)) return candidate;
+        }
+        return '';
+      })();
+      const profileName = h1ProfileName || inferredProfileName;
+      const profileSlug = profileName.toLowerCase();
+      const nameIndex = Math.max(0, topCardLines.findIndex((part) => {
+        const stripped = stripConnectionDegree(part);
+        return stripped === profileName || part === profileName || part.startsWith(`${profileName} `);
+      }));
+      const orderedAfterName = topCardLines.slice(nameIndex + 1);
+      const headlineFromTopCard = (() => {
+        for (const line of orderedAfterName) {
+          if (!line || isDegreeLine(line) || isProfileCountLine(line) || isActionLine(line)) continue;
+          if (/contact info/i.test(line)) continue;
+          if (stripConnectionDegree(line) === profileName) continue;
+          return line;
+        }
+        return '';
+      })();
+      const locationFromTopCard = (() => {
+        for (const line of orderedAfterName) {
+          const candidate = cleanLocationLine(line);
+          if (!candidate || candidate === headlineFromTopCard || candidate === profileName) continue;
+          if (isDegreeLine(candidate) || isProfileCountLine(candidate) || isActionLine(candidate)) continue;
+          if (/contact info/i.test(line) && candidate) return candidate;
+          if (candidate.includes(',') && !candidate.includes('|')) return candidate;
+        }
+        return '';
+      })();
+      const profileImageFromTopCard = (() => {
+        const images = Array.from(topCardRoot.querySelectorAll('img')).filter(visible);
+        const scored = images
+          .map((img) => {
+            const src = imageUrl(img);
+            const alt = clean(img.getAttribute('alt')).toLowerCase();
+            const rect = img.getBoundingClientRect();
+            const lowerSrc = src.toLowerCase();
+            let score = 0;
+            if (!src) score -= 1000;
+            if (lowerSrc.includes('profile-displayphoto')) score += 100;
+            if (alt && profileSlug && alt.includes(profileSlug)) score += 45;
+            if (alt.includes('profile') || alt.includes('photo')) score += 20;
+            if (rect.width >= 72 && rect.height >= 72) score += 20;
+            if (rect.width > 320 || rect.height > 320) score -= 80;
+            if (lowerSrc.includes('profile-backgroundimage') || lowerSrc.includes('company-logo') || lowerSrc.includes('ghost')) score -= 150;
+            return { src, score };
+          })
+          .filter((item) => item.src && item.score > 0)
+          .sort((left, right) => right.score - left.score);
+        return scored.length ? scored[0].src : '';
+      })();
       const sectionText = (labels) => {
         const sections = Array.from(document.querySelectorAll('main section, section, div[data-view-name]'));
         for (const section of sections) {
@@ -303,50 +415,38 @@ def _extract_profile_details_from_page(page: Any) -> dict[str, Any]:
         }
         return '';
       };
-      const topCard = () => {
-        const sections = Array.from(document.querySelectorAll('main section'));
-        for (const section of sections) {
-          const sectionLines = lines(section);
-          if (sectionLines.length < 2) continue;
-          const first = sectionLines[0].toLowerCase();
-          if (['about', 'services', 'featured', 'activity', 'experience'].includes(first)) continue;
-          if (first.includes('people who') || first.includes('ad options')) continue;
-          const joined = sectionLines.join(' ').toLowerCase();
-          if (!joined.includes('contact info') && !joined.includes('followers') && !joined.includes('message')) continue;
-          const ignored = ['contact info', 'followers', 'connections', 'message', 'connect', 'follow'];
-          const location = sectionLines.find((part, index) => {
-            const lower = part.toLowerCase();
-            return index > 1 && !ignored.some((token) => lower.includes(token));
-          }) || '';
-          return {
-            name: sectionLines[0] || '',
-            headline: sectionLines[1] || '',
-            location
-          };
-        }
-        return { name: '', headline: '', location: '' };
-      };
-
-      const card = topCard();
-      const name = firstText([
+      const selectorName = firstText([
         'main h1',
         '.top-card-layout__title',
         '.pv-text-details__left-panel h1',
         'h1'
-      ]) || card.name;
-      const headline = firstText([
+      ]);
+      const name = stripConnectionDegree(selectorName) || profileName;
+      const selectorHeadline = firstText([
         '.text-body-medium.break-words',
         '.top-card-layout__headline',
         '.pv-text-details__left-panel .text-body-medium',
         'main section div.text-body-medium'
-      ]) || card.headline;
-      const location = firstText([
+      ]);
+      const selectorHeadlineValid = (!isDegreeLine(selectorHeadline) && selectorHeadline !== name)
+        ? selectorHeadline
+        : '';
+      const headline = headlineFromTopCard || selectorHeadlineValid;
+      const selectorLocation = firstText([
         '.pv-text-details__left-panel .text-body-small.inline.t-black--light.break-words',
         '.pv-text-details__left-panel .text-body-small.t-black--light',
         '.top-card-layout__first-subline',
         'main section .text-body-small.inline.t-black--light.break-words'
-      ]) || card.location;
-      const profileImageUrl = firstAttr([
+      ]);
+      const normalizedSelectorLocation = cleanLocationLine(selectorLocation);
+      const selectorLocationValid = normalizedSelectorLocation
+        && normalizedSelectorLocation !== headline
+        && normalizedSelectorLocation !== name
+        && !isDegreeLine(normalizedSelectorLocation)
+        ? normalizedSelectorLocation
+        : '';
+      const location = locationFromTopCard || selectorLocationValid;
+      const profileImageUrl = profileImageFromTopCard || firstAttr([
         'img.pv-top-card-profile-picture__image--show',
         '.pv-top-card-profile-picture__container img',
         '.pv-top-card-profile-picture__image img',
@@ -555,11 +655,27 @@ def fetch_profile_details(profile_url: str) -> dict[str, Any]:
             except Exception as exc:
                 print(f"Could not read LinkedIn experience page: {exc}")
 
+            name = _clean_text(str(details.get("name", "")))
+            headline = _clean_text(str(details.get("headline", "")))
+            location = _clean_text(str(details.get("location", "")))
+            if _looks_like_connection_degree(headline):
+                headline = ""
+            if not headline and _looks_like_headline_saved_as_location(location):
+                headline = location
+                location = ""
+            if location == headline:
+                location = ""
+            if _looks_like_invalid_profile_details(name, headline, location):
+                return _error(
+                    "linkedin_profile_not_found",
+                    "LinkedIn profile page was not found or did not expose a valid creator profile.",
+                )[0]
+
             return {
-                "name": _clean_text(str(details.get("name", ""))),
-                "headline": _clean_text(str(details.get("headline", ""))),
+                "name": name,
+                "headline": headline,
                 "about": _clean_text(str(details.get("about", ""))),
-                "location": _clean_text(str(details.get("location", ""))),
+                "location": location,
                 "profile_image_url": str(details.get("profile_image_url", "")).strip(),
                 "experience": experience,
                 "fetched_at": _now(),
