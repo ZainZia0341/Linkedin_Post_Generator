@@ -90,6 +90,7 @@ export type CreatorProfileDetailsResponse = {
   headline: string;
   about: string;
   location: string;
+  email?: string;
   profile_image_url: string;
   experience: string[];
   fetched_at: string;
@@ -168,6 +169,34 @@ export type RecentScrapeCreatorsResponse = {
     creator_id?: string;
     message?: string;
   }>;
+};
+
+export type ScrapeCreatorProfilesResponse = {
+  user_id: string;
+  checked_creator_ids: string[];
+  profiles: CreatorProfileDetailsResponse[];
+  errors: Array<{
+    creator_id?: string;
+    message?: string;
+  }>;
+};
+
+export type CommentResponse = {
+  user_id: string;
+  creator_id: string;
+  post_id: string;
+  comment_topic: string;
+  comment: string;
+  provider?: string;
+  model?: string;
+  generated_at?: string;
+  commented?: boolean;
+};
+
+export type CommentedActivityResponse = ActivityResponse & {
+  comment_topic: string;
+  comment: string;
+  commented_at: string;
 };
 
 export type DeleteResponse = {

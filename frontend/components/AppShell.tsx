@@ -4,23 +4,18 @@ import Link from "next/link";
 import {
   Bell,
   Brain,
-  Clock3,
-  FileText,
-  Gauge,
-  History,
   LayoutDashboard,
-  MessageSquareText,
   PenLine,
-  Settings,
+  Rss,
   Sparkles,
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ThreadSummary } from "@/lib/types";
-import { compactDate, initials, threadTitle } from "@/lib/format";
+import { initials } from "@/lib/format";
 
 type AppShellProps = {
-  active: "dashboard" | "generate" | "brainstorm" | "creators" | "activity" | "engagement" | "history" | "settings";
+  active: "dashboard" | "generate" | "brainstorm" | "creators" | "posts" | "activity" | "engagement" | "history" | "settings";
   title: string;
   subtitle?: string;
   userName: string;
@@ -34,10 +29,7 @@ const navItems = [
   { key: "generate", label: "Generate", href: "/generate", icon: Sparkles },
   { key: "brainstorm", label: "Brainstorm", href: "", icon: Brain },
   { key: "creators", label: "Creators", href: "/creators", icon: Users },
-  { key: "activity", label: "Activity Feed", href: "", icon: Gauge },
-  { key: "engagement", label: "Engagement", href: "", icon: MessageSquareText },
-  { key: "history", label: "History", href: "", icon: History },
-  { key: "settings", label: "Settings", href: "", icon: Settings },
+  { key: "posts", label: "Posts & Scraping", href: "/posts-scraping", icon: Rss },
 ] as const;
 
 export function AppShell({
@@ -46,7 +38,6 @@ export function AppShell({
   subtitle,
   userName,
   userTitle = "",
-  threads = [],
   children,
 }: AppShellProps) {
   const displayUserName = userName || "User";
@@ -86,28 +77,6 @@ export function AppShell({
             );
           })}
         </nav>
-
-        <div className="sidebar-section">
-          <div className="sidebar-section-title">
-            <Clock3 size={14} />
-            Recent threads
-          </div>
-          <div className="thread-list">
-            {threads.length ? (
-              threads.slice(0, 5).map((thread) => (
-                <Link className="thread-link" href="/generate" key={thread.thread_id}>
-                  <FileText size={14} />
-                  <span>
-                    <strong>{threadTitle(thread)}</strong>
-                    <small>{compactDate(thread.updated_at)}</small>
-                  </span>
-                </Link>
-              ))
-            ) : (
-              <div className="empty-mini">No thread history</div>
-            )}
-          </div>
-        </div>
 
         <div className="sidebar-user">
           <div className="avatar small">{userInitials}</div>

@@ -13,7 +13,9 @@ function timeoutForPath(path: string): number | null {
     path.includes("creators/profile-details/scrape") ||
     path.includes("creators/import") ||
     path.includes("posts/generate") ||
+    path.includes("posts/from-creator-activity") ||
     path.includes("posts/modify") ||
+    path.includes("comments/generate") ||
     path.includes("ideas/brainstorm")
   ) {
     return null;

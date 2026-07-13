@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import {
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   ExternalLink,
   FileUp,
-  Grid2X2,
-  List,
+  FileText,
+  Info,
   Loader2,
   Plus,
   Search,
@@ -17,18 +19,37 @@ import {
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { DEFAULT_USER_ID, addCreator, fetchUserData, importCreators, previewCreatorImport } from "@/lib/api";
+import {
+  DEFAULT_USER_ID,
+  addCreator,
+  fetchCreatorProfiles,
+  fetchUserData,
+  importCreators,
+  previewCreatorImport,
+  scrapeCreatorProfiles,
+} from "@/lib/api";
 import { compactDate, displayName, initials, sortThreads } from "@/lib/format";
-import type { BulkCreatorImportResponse, BulkCreatorPreviewResponse, CreatorResponse, UserDataResponse } from "@/lib/types";
+import type {
+  BulkCreatorImportResponse,
+  BulkCreatorPreviewResponse,
+  CreatorProfileDetailsResponse,
+  CreatorResponse,
+  UserDataResponse,
+} from "@/lib/types";
 
 type ModalMode = "single" | "bulk" | null;
+type LastCheckedSort = "desc" | "asc";
+type CreatorSortBy = "recently_added" | "last_checked_desc" | "last_checked_asc" | "name_asc" | "new_posts_desc";
 const PAGE_SIZE = 10;
-const SCRAPE_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export function CreatorsView() {
   const [userData, setUserData] = useState<UserDataResponse | null>(null);
+  const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [lastCheckedSort, setLastCheckedSort] = useState<LastCheckedSort>("desc");
+  const [sortBy, setSortBy] = useState<CreatorSortBy>("recently_added");
+  const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [loading, setLoading] = useState(true);
@@ -44,8 +65,15 @@ export function CreatorsView() {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchUserData(DEFAULT_USER_ID);
-      setUserData(data);
+      const [dataResult, profileResult] = await Promise.allSettled([
+        fetchUserData(DEFAULT_USER_ID),
+        fetchCreatorProfiles(DEFAULT_USER_ID, 500),
+      ]);
+      if (dataResult.status === "rejected") throw dataResult.reason;
+      setUserData(dataResult.value);
+      if (profileResult.status === "fulfilled") {
+        setProfileMap(new Map(profileResult.value.map((profile) => [profile.creator_id, profile])));
+      }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not load creators.");
     } finally {
@@ -59,7 +87,7 @@ export function CreatorsView() {
 
   useEffect(() => {
     setPage(1);
-  }, [query, statusFilter]);
+  }, [query, sortBy, statusFilter]);
 
   const creators = userData?.creators ?? [];
   const sortedThreads = useMemo(() => sortThreads(userData?.threads ?? []), [userData?.threads]);
@@ -67,7 +95,10 @@ export function CreatorsView() {
   const filteredCreators = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return creators.filter((creator) => {
+      const profile = profileMap.get(creator.creator_id);
       const text = [
+        safeProfileName(profile, creator),
+        safeProfileHeadline(profile, creator),
         creator.display_name,
         creator.creator_id,
         creator.profile_url,
@@ -76,19 +107,50 @@ export function CreatorsView() {
       const status = creatorStatus(creator);
       const matchesStatus =
         statusFilter === "All" ||
-        statusFilter === status ||
-        (statusFilter === "Active" && status === "Up To Date") ||
-        (statusFilter === "Needs Scraping" && creatorNeedsScraping(creator));
+        statusFilter === status;
       return matchesQuery && matchesStatus;
-    });
-  }, [creators, query, statusFilter]);
+    }).sort((left, right) => compareCreators(left, right, sortBy, profileMap));
+  }, [creators, profileMap, query, sortBy, statusFilter]);
   const totalPages = Math.max(1, Math.ceil(filteredCreators.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pageStart = filteredCreators.length ? (safePage - 1) * PAGE_SIZE : 0;
   const pageEnd = Math.min(pageStart + PAGE_SIZE, filteredCreators.length);
   const visibleCreators = filteredCreators.slice(pageStart, pageEnd);
+  const visibleCreatorIds = visibleCreators.map((creator) => creator.creator_id);
+  const allVisibleSelected = visibleCreatorIds.length > 0 && visibleCreatorIds.every((creatorId) => selectedCreatorIds.has(creatorId));
+  const someVisibleSelected = visibleCreatorIds.some((creatorId) => selectedCreatorIds.has(creatorId));
 
   const stats = userData?.dashboard_stats;
+
+  function toggleVisibleCreators() {
+    setSelectedCreatorIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) {
+        visibleCreatorIds.forEach((creatorId) => next.delete(creatorId));
+      } else {
+        visibleCreatorIds.forEach((creatorId) => next.add(creatorId));
+      }
+      return next;
+    });
+  }
+
+  function toggleCreatorSelection(creatorId: string) {
+    setSelectedCreatorIds((current) => {
+      const next = new Set(current);
+      if (next.has(creatorId)) {
+        next.delete(creatorId);
+      } else {
+        next.add(creatorId);
+      }
+      return next;
+    });
+  }
+
+  function changeCreatorSort(nextSort: CreatorSortBy) {
+    setSortBy(nextSort);
+    if (nextSort === "last_checked_desc") setLastCheckedSort("desc");
+    if (nextSort === "last_checked_asc") setLastCheckedSort("asc");
+  }
 
   return (
     <AppShell
@@ -114,8 +176,7 @@ export function CreatorsView() {
 
       <section className="creator-metric-grid">
         <CreatorMetric icon={<Users size={20} />} label="Total Creators" value={(stats?.creator_count ?? 0).toString()} />
-        <CreatorMetric icon={<List size={20} />} label="New Posts Last Scrape" value={(stats?.new_posts_from_last_scrape_count ?? 0).toString()} />
-        <CreatorMetric icon={<Loader2 size={20} />} label="Needs Scraping" value={(stats?.needs_scraping_count ?? 0).toString()} urgent />
+        <CreatorMetric icon={<FileText size={20} />} label="New Posts 24h" value={(stats?.new_posts_today_count ?? 0).toString()} />
         <CreatorMetric icon={<Plus size={20} />} label="Recently Added" value={(stats?.recently_added_count ?? 0).toString()} />
       </section>
 
@@ -131,7 +192,7 @@ export function CreatorsView() {
           </label>
 
           <div className="filter-tabs" aria-label="Creator status filters">
-            {["All", "Active", "Needs Scraping", "Never Scraped"].map((filter) => (
+            {["All", "Never Scraped"].map((filter) => (
               <button
                 className={statusFilter === filter ? "selected" : ""}
                 type="button"
@@ -143,14 +204,16 @@ export function CreatorsView() {
             ))}
           </div>
 
-          <div className="view-toggle" aria-label="View mode">
-            <button className="selected" type="button" title="List view">
-              <List size={17} />
-            </button>
-            <button type="button" title="Grid view" disabled>
-              <Grid2X2 size={17} />
-            </button>
-          </div>
+          <label className="sort-control">
+            <span>Sort by:</span>
+            <select value={sortBy} onChange={(event) => changeCreatorSort(event.target.value as CreatorSortBy)}>
+              <option value="recently_added">Recently Added</option>
+              <option value="last_checked_desc">Last Checked Newest</option>
+              <option value="last_checked_asc">Last Checked Oldest</option>
+              <option value="new_posts_desc">New Posts</option>
+              <option value="name_asc">Name A-Z</option>
+            </select>
+          </label>
         </div>
 
         {error ? <div className="error-banner">{error}</div> : null}
@@ -160,19 +223,49 @@ export function CreatorsView() {
           <table className="creator-table">
             <thead>
               <tr>
+                <th className="select-column">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    ref={(node) => {
+                      if (node) node.indeterminate = !allVisibleSelected && someVisibleSelected;
+                    }}
+                    onChange={toggleVisibleCreators}
+                    aria-label="Select visible creators"
+                  />
+                </th>
                 <th>Creator</th>
                 <th>Headline</th>
                 <th>LinkedIn URL</th>
-                <th>Last Checked</th>
+                <th>
+                  <button
+                    className="sortable-heading"
+                    type="button"
+                    onClick={() => {
+                      const nextSort = lastCheckedSort === "desc" ? "asc" : "desc";
+                      setLastCheckedSort(nextSort);
+                      changeCreatorSort(nextSort === "desc" ? "last_checked_desc" : "last_checked_asc");
+                    }}
+                    aria-label={`Sort last checked ${lastCheckedSort === "desc" ? "ascending" : "descending"}`}
+                  >
+                    Last Checked
+                    {lastCheckedSort === "desc" ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
+                  </button>
+                </th>
                 <th>New Posts</th>
                 <th>Status</th>
-                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {visibleCreators.length ? (
                 visibleCreators.map((creator) => (
-                  <CreatorRow creator={creator} key={creator.creator_id} />
+                  <CreatorRow
+                    creator={creator}
+                    profile={profileMap.get(creator.creator_id)}
+                    selected={selectedCreatorIds.has(creator.creator_id)}
+                    onToggleSelected={toggleCreatorSelection}
+                    key={creator.creator_id}
+                  />
                 ))
               ) : (
                 <tr>
@@ -266,34 +359,169 @@ function CreatorMetric({
   );
 }
 
-function creatorNeedsScraping(creator: CreatorResponse) {
-  if (!creator.last_checked_at) return true;
-  const checked = new Date(creator.last_checked_at).getTime();
-  if (Number.isNaN(checked)) return true;
-  return Date.now() - checked >= SCRAPE_STALE_AFTER_MS;
-}
-
 function creatorStatus(creator: CreatorResponse) {
   if (!creator.last_checked_at) return "Never Scraped";
-  return creatorNeedsScraping(creator) ? "Needs Scraping" : "Up To Date";
+  return "Up To Date";
 }
 
-function CreatorRow({ creator }: { creator: CreatorResponse }) {
-  const label = creator.display_name || creator.creator_id;
+function compareCreators(
+  left: CreatorResponse,
+  right: CreatorResponse,
+  sortBy: CreatorSortBy,
+  profileMap: Map<string, CreatorProfileDetailsResponse>,
+) {
+  if (sortBy === "recently_added") {
+    return compareNewestFirst(left.added_at, right.added_at, () => compareNames(left, right, profileMap));
+  }
+  if (sortBy === "last_checked_asc") {
+    return compareLastChecked(left, right, "asc");
+  }
+  if (sortBy === "last_checked_desc") {
+    return compareLastChecked(left, right, "desc");
+  }
+  if (sortBy === "new_posts_desc") {
+    const countDiff = (right.new_count ?? 0) - (left.new_count ?? 0);
+    return countDiff || compareLastChecked(left, right, "desc");
+  }
+  return compareNames(left, right, profileMap);
+}
+
+function compareLastChecked(left: CreatorResponse, right: CreatorResponse, direction: LastCheckedSort) {
+  const leftTime = lastCheckedTime(left);
+  const rightTime = lastCheckedTime(right);
+  if (leftTime === null && rightTime === null) {
+    return left.creator_id.localeCompare(right.creator_id);
+  }
+  if (leftTime === null) return 1;
+  if (rightTime === null) return -1;
+  return direction === "desc" ? rightTime - leftTime : leftTime - rightTime;
+}
+
+function compareNames(
+  left: CreatorResponse,
+  right: CreatorResponse,
+  profileMap: Map<string, CreatorProfileDetailsResponse>,
+) {
+  return safeProfileName(profileMap.get(left.creator_id), left).localeCompare(
+    safeProfileName(profileMap.get(right.creator_id), right),
+  );
+}
+
+function compareNewestFirst(leftValue: string | null | undefined, rightValue: string | null | undefined, fallback: () => number) {
+  const leftTime = parseSortableTime(leftValue);
+  const rightTime = parseSortableTime(rightValue);
+  if (leftTime === null && rightTime === null) return fallback();
+  if (leftTime === null) return 1;
+  if (rightTime === null) return -1;
+  return rightTime - leftTime;
+}
+
+function parseSortableTime(value: string | null | undefined) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function lastCheckedTime(creator: CreatorResponse) {
+  if (!creator.last_checked_at) return null;
+  const time = new Date(creator.last_checked_at).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function profileLooksUnavailable(profile?: CreatorProfileDetailsResponse) {
+  if (!profile) return false;
+  return isBadScrapedText(profile.name) || isBadScrapedText(profile.headline);
+}
+
+function isBadScrapedText(value?: string) {
+  const text = (value || "").trim().toLowerCase();
+  if (!text) return false;
+  if (text === "0 notifications" || text === "skip to main content") return true;
+  if (/^\d+\s+notifications?$/.test(text)) return true;
+  return text.includes("skip to main content") || text.includes("profile not found") || text.includes("page not found");
+}
+
+function safeProfileName(profile: CreatorProfileDetailsResponse | undefined, creator: CreatorResponse) {
+  if (profile?.name && !isBadScrapedText(profile.name)) return profile.name;
+  return creator.display_name || creator.creator_id;
+}
+
+function safeProfileHeadline(profile: CreatorProfileDetailsResponse | undefined, creator: CreatorResponse) {
+  if (profileLooksUnavailable(profile)) return "Profile not found or unavailable";
+  if (profile?.headline && !isBadScrapedText(profile.headline)) return profile.headline;
+  return creator.display_name ? "Saved creator profile" : "Profile details not scraped";
+}
+
+function safeProfileImageUrl(profile?: CreatorProfileDetailsResponse) {
+  if (!profile || profileLooksUnavailable(profile)) return "";
+  return profile.profile_image_url;
+}
+
+function normalizeLinkedInProfileUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/\s/.test(trimmed)) return "";
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (host !== "linkedin.com" || parts[0]?.toLowerCase() !== "in" || !parts[1]) {
+      return "";
+    }
+    parsed.protocol = "https:";
+    parsed.hostname = "www.linkedin.com";
+    parsed.pathname = `/in/${parts[1]}/`;
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function CreatorRow({
+  creator,
+  profile,
+  selected,
+  onToggleSelected,
+}: {
+  creator: CreatorResponse;
+  profile?: CreatorProfileDetailsResponse;
+  selected: boolean;
+  onToggleSelected: (creatorId: string) => void;
+}) {
+  const label = safeProfileName(profile, creator);
+  const headline = safeProfileHeadline(profile, creator);
+  const profileImageUrl = safeProfileImageUrl(profile);
   const status = creatorStatus(creator);
   const statusClass = status === "Up To Date" ? "status-pill success" : "status-pill neutral";
   return (
     <tr>
+      <td className="select-column">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelected(creator.creator_id)}
+          aria-label={`Select ${label}`}
+        />
+      </td>
       <td>
         <Link className="creator-identity" href={`/creators/${encodeURIComponent(creator.creator_id)}`}>
-          <div className="avatar mini">{initials(label)}</div>
+          <div className="avatar mini">
+            {profileImageUrl ? (
+              <img src={profileImageUrl} alt={`${label} profile`} />
+            ) : (
+              initials(label)
+            )}
+          </div>
           <span>
             <strong>{label}</strong>
             <small>@{creator.creator_id}</small>
           </span>
         </Link>
       </td>
-      <td>{creator.display_name ? "Saved creator profile" : "Profile details not scraped"}</td>
+      <td>{headline}</td>
       <td>
         <a className="table-link" href={creator.profile_url} target="_blank" rel="noreferrer">
           {creator.profile_url.replace(/^https?:\/\//, "")}
@@ -304,11 +532,6 @@ function CreatorRow({ creator }: { creator: CreatorResponse }) {
       <td>{creator.new_count ? `${creator.new_count} New` : "0 Posts"}</td>
       <td>
         <span className={statusClass}>{status}</span>
-      </td>
-      <td>
-        <Link className="text-button" href={`/creators/${encodeURIComponent(creator.creator_id)}`}>
-          View
-        </Link>
       </td>
     </tr>
   );
@@ -326,15 +549,25 @@ function AddCreatorDialog({
   const [error, setError] = useState("");
 
   async function submit() {
+    const normalizedUrl = normalizeLinkedInProfileUrl(url);
     if (!url.trim()) {
       setError("LinkedIn profile URL is required.");
+      return;
+    }
+    if (!normalizedUrl) {
+      setError("Enter a valid LinkedIn profile URL like https://www.linkedin.com/in/creator.");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const creator = await addCreator({ user_id: DEFAULT_USER_ID, profile_url: url.trim() });
-      onAdded(`${creator.display_name || creator.creator_id} added successfully`);
+      const creator = await addCreator({ user_id: DEFAULT_USER_ID, profile_url: normalizedUrl });
+      const profileResult = await scrapeCreatorProfiles(DEFAULT_USER_ID, [creator.creator_id]);
+      if (profileResult.errors.length) {
+        const firstError = profileResult.errors[0];
+        throw new Error(firstError.message || "Creator was added, but profile scraping failed.");
+      }
+      onAdded(`${creator.display_name || creator.creator_id} added and profile scraped`);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not add creator.");
     } finally {
@@ -365,9 +598,9 @@ function AddCreatorDialog({
             />
           </label>
 
-          <div className="api-needed-card">
-            <strong>Live preview needs backend support</strong>
-            <p>The current API can add and normalize a creator URL, but it does not validate or preview profile metadata before saving.</p>
+          <div className="sync-info-card">
+            <Info size={18} />
+            <p>Adding this creator will start historical data sync. This usually takes 2-5 minutes to complete.</p>
           </div>
 
           {error ? <div className="error-banner">{error}</div> : null}
@@ -376,7 +609,7 @@ function AddCreatorDialog({
         <footer className="drawer-footer">
           <button className="primary-button" type="button" onClick={submit} disabled={busy}>
             {busy ? <Loader2 className="spin" size={17} /> : null}
-            Add Creator
+            {busy ? "Adding and scraping..." : "Add Creator"}
           </button>
           <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
         </footer>
@@ -435,6 +668,7 @@ function BulkImportForm({
   const existingRows = preview?.existing_creators ?? [];
   const duplicateRows = preview?.duplicate_creators ?? [];
   const previewErrors = preview?.errors ?? [];
+  const canImport = Boolean(file && preview && newRows.length > 0 && !previewBusy && !busy);
 
   async function handleFileChange(nextFile: File | null) {
     setFile(nextFile);
@@ -472,7 +706,17 @@ function BulkImportForm({
         return;
       }
       const addedCount = response.added_creators.length;
-      onImported(`${addedCount} new creator${addedCount === 1 ? "" : "s"} added`);
+      if (addedCount > 0) {
+        const profileResult = await scrapeCreatorProfiles(
+          DEFAULT_USER_ID,
+          response.added_creators.map((creator) => creator.creator_id),
+        );
+        if (profileResult.errors.length) {
+          const firstError = profileResult.errors[0];
+          throw new Error(firstError.message || "Creators were imported, but profile scraping failed.");
+        }
+      }
+      onImported(`${addedCount} new creator${addedCount === 1 ? "" : "s"} added and profile scraped`);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not import creators.");
     } finally {
@@ -506,29 +750,12 @@ function BulkImportForm({
               <span>{preview.total_urls} URL{preview.total_urls === 1 ? "" : "s"} checked</span>
             </div>
             <div className="import-stats">
-              <MiniStat label="Corrected" value={preview.corrected_creators.length.toString()} />
               <MiniStat label="New URLs" value={newRows.length.toString()} />
-              <MiniStat label="In DB" value={existingRows.length.toString()} />
               <MiniStat label="Duplicates" value={duplicateRows.length.toString()} />
+              <MiniStat label="Already in DB" value={existingRows.length.toString()} />
               <MiniStat label="Errors" value={previewErrors.length.toString()} danger />
             </div>
           </div>
-        ) : null}
-
-        {newRows.length && !result ? (
-          <ImportResultTable title="New URLs" rows={newRows} />
-        ) : null}
-
-        {existingRows.length && !result ? (
-          <ImportResultTable title="Already in database" rows={existingRows} />
-        ) : null}
-
-        {preview?.corrected_creators.length && !result ? (
-          <ImportResultTable title="Corrected URLs" rows={preview.corrected_creators} />
-        ) : null}
-
-        {duplicateRows.length && !result ? (
-          <ImportResultTable title="Duplicates in file" rows={duplicateRows} />
         ) : null}
 
         {previewErrors.length && !result ? (
@@ -550,14 +777,6 @@ function BulkImportForm({
           </div>
         ) : null}
 
-        {skippedExisting.length ? (
-          <ImportResultTable title="Skipped: already in database" rows={skippedExisting} />
-        ) : null}
-
-        {skippedDuplicates.length ? (
-          <ImportResultTable title="Duplicates in file" rows={skippedDuplicates} />
-        ) : null}
-
         {result?.errors.length ? (
           <ImportResultTable title="Error Log" rows={result.errors} danger />
         ) : null}
@@ -567,9 +786,9 @@ function BulkImportForm({
 
       <footer className="drawer-footer">
         <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="button" onClick={submit} disabled={busy || previewBusy || !file}>
+        <button className="primary-button" type="button" onClick={submit} disabled={!canImport}>
           {busy ? <Loader2 className="spin" size={17} /> : null}
-          Import Creators
+          {busy ? "Importing and scraping..." : "Import Creators"}
         </button>
       </footer>
     </>
