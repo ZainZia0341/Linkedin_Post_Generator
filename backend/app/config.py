@@ -23,6 +23,26 @@ def _read_dotenv_value(key: str) -> str:
 def _env_value(key: str, default: str = "") -> str:
     return os.getenv(key, "").strip() or _read_dotenv_value(key) or default
 
+
+def _env_optional(key: str) -> str:
+    if key in os.environ:
+        return os.getenv(key, "").strip()
+    return _read_dotenv_value(key).strip()
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    value = _env_optional(key)
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+APP_ENV: Final[str] = _env_value("APP_ENV", "local").lower()
+RUNNING_IN_LAMBDA: Final[bool] = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+_DEFAULT_DYNAMODB_ENDPOINT_URL: Final[str] = (
+    "" if RUNNING_IN_LAMBDA or APP_ENV in {"dev", "staging", "prod", "production"} else "http://localhost:8000"
+)
+
 LOCAL_DB_DIR: Final[Path] = Path(
     os.getenv("LOCAL_DB_DIR", str(PROJECT_ROOT / "schema" / "local_db"))
 )
@@ -39,9 +59,11 @@ TAVILY_SEARCH_RESULTS: Final[int] = int(os.getenv("TAVILY_SEARCH_RESULTS", "5"))
 API_LIST_LIMIT: Final[int] = int(_env_value("API_LIST_LIMIT", "10"))
 SCRAPE_MAX_WORKERS: Final[int] = int(_env_value("SCRAPE_MAX_WORKERS", "2"))
 
-DYNAMODB_ENDPOINT_URL: Final[str] = _env_value("DYNAMODB_ENDPOINT_URL", "http://localhost:8000")
-DYNAMODB_REGION_NAME: Final[str] = _env_value("AWS_DEFAULT_REGION", "us-west-2")
+DYNAMODB_ENDPOINT_URL: Final[str] = _env_optional("DYNAMODB_ENDPOINT_URL") or _DEFAULT_DYNAMODB_ENDPOINT_URL
+DYNAMODB_REGION_NAME: Final[str] = _env_value("AWS_REGION", _env_value("AWS_DEFAULT_REGION", "us-east-2"))
 DYNAMODB_TABLE_PREFIX: Final[str] = _env_value("DYNAMODB_TABLE_PREFIX", "linkedin_post_generator")
+DYNAMODB_AUTO_CREATE_TABLES: Final[bool] = _env_bool("DYNAMODB_AUTO_CREATE_TABLES", bool(DYNAMODB_ENDPOINT_URL))
+SCRAPING_ENABLED: Final[bool] = _env_bool("SCRAPING_ENABLED", not RUNNING_IN_LAMBDA)
 
 LINKEDIN_DEFAULT_TRACK_URL: Final[str] = _env_value(
     "LINKEDIN_DEFAULT_TRACK_URL",

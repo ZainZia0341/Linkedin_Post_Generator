@@ -18,6 +18,7 @@ import { AppShell } from "@/components/AppShell";
 import { RunScrapingDialog } from "@/components/RunScrapingDialog";
 import {
   DEFAULT_USER_ID,
+  ENABLE_SCRAPING,
   deleteCreator,
   fetchCreatorActivities,
   fetchCreatorProfile,
@@ -134,7 +135,13 @@ export function CreatorDetailView({ creatorId }: { creatorId: string }) {
             </div>
             <p>{profileHeadline}</p>
             <div className="action-row">
-              <button className="primary-button compact" type="button" onClick={() => setShowScrapeDialog(true)}>
+              <button
+                className="primary-button compact"
+                type="button"
+                onClick={() => setShowScrapeDialog(true)}
+                disabled={!ENABLE_SCRAPING}
+                title={ENABLE_SCRAPING ? "Run scraping" : "Run scraping locally"}
+              >
                 <RefreshCw size={16} />
                 Run Scraping
               </button>

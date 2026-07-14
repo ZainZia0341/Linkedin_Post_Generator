@@ -65,7 +65,7 @@ from app.api.services import (
     update_user,
     user_response,
 )
-from app.config import API_LIST_LIMIT, PROVIDER_MODELS
+from app.config import API_LIST_LIMIT, PROVIDER_MODELS, SCRAPING_ENABLED
 from app.db.dynamodb import DynamoRepository, DynamoUnavailable, get_repository
 from app.llms.llm import LLMConfig, test_provider_api_key
 
@@ -93,6 +93,18 @@ def repo_dependency() -> DynamoRepository:
 
 def _not_found(exc: KeyError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(exc).strip("'"))
+
+
+def _require_scraping_enabled() -> None:
+    if SCRAPING_ENABLED:
+        return
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Scraping is disabled in this deployment. Run the Playwright scraping workflow locally "
+            "and save results to the configured DynamoDB tables."
+        ),
+    )
 
 
 @app.get("/health")
@@ -338,6 +350,7 @@ def scrape_creator_profiles_endpoint(
     payload: ScrapeCreatorProfilesRequest,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
 ) -> ScrapeCreatorProfilesResponse:
+    _require_scraping_enabled()
     try:
         return scrape_creator_profile_details(repo, payload)
     except KeyError as exc:
@@ -394,6 +407,7 @@ def scrape_creators_endpoint(
     payload: ScrapeCreatorsRequest,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
 ) -> ScrapeCreatorsResponse:
+    _require_scraping_enabled()
     try:
         from app.api.services import scrape_creators
 
@@ -407,6 +421,7 @@ def scrape_recent_creators_endpoint(
     payload: RecentScrapeCreatorsRequest,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
 ) -> RecentScrapeCreatorsResponse:
+    _require_scraping_enabled()
     try:
         return scrape_creators_recent_24h(repo, payload)
     except KeyError as exc:

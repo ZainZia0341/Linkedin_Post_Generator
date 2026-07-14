@@ -16,6 +16,7 @@ import type {
 } from "@/lib/types";
 
 export const DEFAULT_USER_ID = process.env.NEXT_PUBLIC_DEFAULT_USER_ID || "test-user-1";
+export const ENABLE_SCRAPING = process.env.NEXT_PUBLIC_ENABLE_SCRAPING !== "false";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/backend${path}`, {

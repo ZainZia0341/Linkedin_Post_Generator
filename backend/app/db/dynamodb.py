@@ -10,6 +10,7 @@ from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionEr
 
 from app.config import (
     API_LIST_LIMIT,
+    DYNAMODB_AUTO_CREATE_TABLES,
     DYNAMODB_ENDPOINT_URL,
     DYNAMODB_REGION_NAME,
     DYNAMODB_TABLE_PREFIX,
@@ -46,13 +47,22 @@ class DynamoRepository:
     def __init__(self) -> None:
         import boto3
 
+        resource_kwargs: dict[str, Any] = {
+            "region_name": DYNAMODB_REGION_NAME,
+            "config": Config(connect_timeout=2, read_timeout=5, retries={"max_attempts": 1}),
+        }
+        if DYNAMODB_ENDPOINT_URL:
+            resource_kwargs.update(
+                {
+                    "endpoint_url": DYNAMODB_ENDPOINT_URL,
+                    "aws_access_key_id": "dummy",
+                    "aws_secret_access_key": "dummy",
+                }
+            )
+
         self.resource = boto3.resource(
             "dynamodb",
-            endpoint_url=DYNAMODB_ENDPOINT_URL,
-            region_name=DYNAMODB_REGION_NAME,
-            aws_access_key_id="dummy",
-            aws_secret_access_key="dummy",
-            config=Config(connect_timeout=2, read_timeout=5, retries={"max_attempts": 1}),
+            **resource_kwargs,
         )
         self.client = self.resource.meta.client
         self.users_table_name = f"{DYNAMODB_TABLE_PREFIX}_users"
@@ -61,7 +71,8 @@ class DynamoRepository:
         self.activities_table_name = f"{DYNAMODB_TABLE_PREFIX}_activities"
 
     def ensure_tables(self) -> None:
-        self._assert_endpoint_reachable()
+        if DYNAMODB_ENDPOINT_URL:
+            self._assert_endpoint_reachable()
         for table_name, partition_key, sort_key in (
             (self.users_table_name, "user_id", None),
             (self.threads_table_name, "user_id", "thread_id"),
@@ -85,23 +96,31 @@ class DynamoRepository:
 
     def _ensure_table(self, table_name: str, partition_key: str, sort_key: str | None) -> None:
         try:
-            existing = self.client.list_tables().get("TableNames", [])
-            if table_name in existing:
+            self.client.describe_table(TableName=table_name)
+            return
+        except self.client.exceptions.ResourceNotFoundException as exc:
+            if not DYNAMODB_AUTO_CREATE_TABLES:
+                raise DynamoUnavailable(
+                    f"DynamoDB table {table_name} does not exist. Deploy the Serverless stack "
+                    "or enable DYNAMODB_AUTO_CREATE_TABLES for local-only development."
+                ) from exc
+            try:
+                key_schema = [{"AttributeName": partition_key, "KeyType": "HASH"}]
+                attributes = [{"AttributeName": partition_key, "AttributeType": "S"}]
+                if sort_key:
+                    key_schema.append({"AttributeName": sort_key, "KeyType": "RANGE"})
+                    attributes.append({"AttributeName": sort_key, "AttributeType": "S"})
+
+                self.resource.create_table(
+                    TableName=table_name,
+                    KeySchema=key_schema,
+                    AttributeDefinitions=attributes,
+                    BillingMode="PAY_PER_REQUEST",
+                ).wait_until_exists()
+                print(f"Created DynamoDB table: {table_name}")
                 return
-
-            key_schema = [{"AttributeName": partition_key, "KeyType": "HASH"}]
-            attributes = [{"AttributeName": partition_key, "AttributeType": "S"}]
-            if sort_key:
-                key_schema.append({"AttributeName": sort_key, "KeyType": "RANGE"})
-                attributes.append({"AttributeName": sort_key, "AttributeType": "S"})
-
-            self.resource.create_table(
-                TableName=table_name,
-                KeySchema=key_schema,
-                AttributeDefinitions=attributes,
-                BillingMode="PAY_PER_REQUEST",
-            ).wait_until_exists()
-            print(f"Created DynamoDB local table: {table_name}")
+            except (BotoCoreError, ClientError) as create_exc:
+                raise DynamoUnavailable(str(create_exc)) from create_exc
         except EndpointConnectionError as exc:
             raise DynamoUnavailable(
                 f"DynamoDB Local is not reachable at {DYNAMODB_ENDPOINT_URL}. "

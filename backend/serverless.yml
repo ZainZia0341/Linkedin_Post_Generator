@@ -1,0 +1,141 @@
+service: linkedin-post-generator-backend
+configValidationMode: error
+
+provider:
+  name: aws
+  region: ${opt:region, 'us-east-2'}
+  stage: ${opt:stage, 'dev'}
+  architecture: x86_64
+  memorySize: 2048
+  timeout: 30
+  logRetentionInDays: 14
+  httpApi:
+    cors: true
+  ecr:
+    images:
+      api:
+        path: ./
+        file: Dockerfile.lambda
+  environment:
+    APP_ENV: ${sls:stage}
+    API_LIST_LIMIT: ${env:API_LIST_LIMIT, '10'}
+    DYNAMODB_TABLE_PREFIX: ${self:custom.tablePrefix}
+    DYNAMODB_AUTO_CREATE_TABLES: 'false'
+    SCRAPING_ENABLED: ${param:scrapingEnabled, 'false'}
+    DEFAULT_LLM_PROVIDER: ${env:DEFAULT_LLM_PROVIDER, 'gemini'}
+    DEFAULT_LLM_MODEL: ${env:DEFAULT_LLM_MODEL, 'gemini-3.1-flash-lite'}
+    GROQ_API_KEY: ${env:GROQ_API_KEY, ''}
+    GOOGLE_API_KEY: ${env:GOOGLE_API_KEY, ''}
+    ANTHROPIC_API_KEY: ${env:ANTHROPIC_API_KEY, ''}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
+    TAVILY_API_KEY: ${env:TAVILY_API_KEY, ''}
+    LINKEDIN_AUTOMATION_MODE: disabled
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:DescribeTable
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+            - dynamodb:Scan
+          Resource:
+            - Fn::GetAtt:
+                - UsersTable
+                - Arn
+            - Fn::GetAtt:
+                - ThreadsTable
+                - Arn
+            - Fn::GetAtt:
+                - CreatorsTable
+                - Arn
+            - Fn::GetAtt:
+                - ActivitiesTable
+                - Arn
+
+custom:
+  tablePrefix: linkedin_post_generator_${sls:stage}
+
+functions:
+  api:
+    image:
+      name: api
+    events:
+      - httpApi:
+          method: '*'
+          path: /
+      - httpApi:
+          method: '*'
+          path: /{proxy+}
+
+resources:
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:custom.tablePrefix}_users
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+
+    ThreadsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:custom.tablePrefix}_threads
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: thread_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: thread_id
+            KeyType: RANGE
+
+    CreatorsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:custom.tablePrefix}_creators
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: creator_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: creator_id
+            KeyType: RANGE
+
+    ActivitiesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:custom.tablePrefix}_activities
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_creator_id
+            AttributeType: S
+          - AttributeName: post_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_creator_id
+            KeyType: HASH
+          - AttributeName: post_id
+            KeyType: RANGE

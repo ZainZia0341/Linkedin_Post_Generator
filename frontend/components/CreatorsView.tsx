@@ -21,6 +21,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import {
   DEFAULT_USER_ID,
+  ENABLE_SCRAPING,
   addCreator,
   fetchCreatorProfiles,
   fetchUserData,
@@ -562,12 +563,18 @@ function AddCreatorDialog({
     setError("");
     try {
       const creator = await addCreator({ user_id: DEFAULT_USER_ID, profile_url: normalizedUrl });
-      const profileResult = await scrapeCreatorProfiles(DEFAULT_USER_ID, [creator.creator_id]);
-      if (profileResult.errors.length) {
-        const firstError = profileResult.errors[0];
-        throw new Error(firstError.message || "Creator was added, but profile scraping failed.");
+      if (ENABLE_SCRAPING) {
+        const profileResult = await scrapeCreatorProfiles(DEFAULT_USER_ID, [creator.creator_id]);
+        if (profileResult.errors.length) {
+          const firstError = profileResult.errors[0];
+          throw new Error(firstError.message || "Creator was added, but profile scraping failed.");
+        }
       }
-      onAdded(`${creator.display_name || creator.creator_id} added and profile scraped`);
+      onAdded(
+        ENABLE_SCRAPING
+          ? `${creator.display_name || creator.creator_id} added and profile scraped`
+          : `${creator.display_name || creator.creator_id} added`,
+      );
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not add creator.");
     } finally {
@@ -600,7 +607,11 @@ function AddCreatorDialog({
 
           <div className="sync-info-card">
             <Info size={18} />
-            <p>Adding this creator will start historical data sync. This usually takes 2-5 minutes to complete.</p>
+            <p>
+              {ENABLE_SCRAPING
+                ? "Adding this creator will start historical data sync. This usually takes 2-5 minutes to complete."
+                : "Adding this creator saves the profile. Run local scraping to sync LinkedIn details."}
+            </p>
           </div>
 
           {error ? <div className="error-banner">{error}</div> : null}
@@ -609,7 +620,7 @@ function AddCreatorDialog({
         <footer className="drawer-footer">
           <button className="primary-button" type="button" onClick={submit} disabled={busy}>
             {busy ? <Loader2 className="spin" size={17} /> : null}
-            {busy ? "Adding and scraping..." : "Add Creator"}
+            {busy ? (ENABLE_SCRAPING ? "Adding and scraping..." : "Adding...") : "Add Creator"}
           </button>
           <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
         </footer>
@@ -706,7 +717,7 @@ function BulkImportForm({
         return;
       }
       const addedCount = response.added_creators.length;
-      if (addedCount > 0) {
+      if (addedCount > 0 && ENABLE_SCRAPING) {
         const profileResult = await scrapeCreatorProfiles(
           DEFAULT_USER_ID,
           response.added_creators.map((creator) => creator.creator_id),
@@ -716,7 +727,11 @@ function BulkImportForm({
           throw new Error(firstError.message || "Creators were imported, but profile scraping failed.");
         }
       }
-      onImported(`${addedCount} new creator${addedCount === 1 ? "" : "s"} added and profile scraped`);
+      onImported(
+        ENABLE_SCRAPING
+          ? `${addedCount} new creator${addedCount === 1 ? "" : "s"} added and profile scraped`
+          : `${addedCount} new creator${addedCount === 1 ? "" : "s"} added`,
+      );
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not import creators.");
     } finally {
@@ -788,7 +803,7 @@ function BulkImportForm({
         <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
         <button className="primary-button" type="button" onClick={submit} disabled={!canImport}>
           {busy ? <Loader2 className="spin" size={17} /> : null}
-          {busy ? "Importing and scraping..." : "Import Creators"}
+          {busy ? (ENABLE_SCRAPING ? "Importing and scraping..." : "Importing...") : "Import Creators"}
         </button>
       </footer>
     </>

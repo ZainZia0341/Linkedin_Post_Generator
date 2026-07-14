@@ -106,6 +106,19 @@ uv run python -m compileall app streamlit_ui test scripts
 uv run pytest
 ```
 
+## AWS Lambda Backend Deployment
+
+The FastAPI backend can be deployed as a Lambda container image through
+`backend/serverless.yml`. This deployment creates DynamoDB tables in AWS and
+keeps Playwright scraping disabled in Lambda; run scraping locally and point the
+local backend at the AWS DynamoDB tables when you need to ingest LinkedIn data.
+
+See:
+
+```text
+backend/docs/aws_lambda_deployment.md
+```
+
 ## Frontend
 
 The `frontend/` folder is ready for the Next.js app. The first frontend planning

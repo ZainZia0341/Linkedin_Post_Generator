@@ -2,7 +2,7 @@
 
 import { Check, Loader2, Minus, Plus, Search, UserCheck, Users, X, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
-import { DEFAULT_USER_ID, runRecentScrape } from "@/lib/api";
+import { DEFAULT_USER_ID, ENABLE_SCRAPING, runRecentScrape } from "@/lib/api";
 import { initials } from "@/lib/format";
 import type { CreatorProfileDetailsResponse, CreatorResponse, RecentScrapeCreatorsResponse } from "@/lib/types";
 
@@ -55,7 +55,7 @@ export function RunScrapingDialog({
   }, [creators, query]);
   const selectedCreators = creators.filter((creator) => selectedSet.has(creator.creator_id));
   const targetCount = scope === "all" ? creators.length : selectedIds.length;
-  const canRun = targetCount > 0 && !busy;
+  const canRun = ENABLE_SCRAPING && targetCount > 0 && !busy;
 
   function toggleCreator(creatorId: string) {
     if (lockSelection) return;
@@ -251,6 +251,9 @@ export function RunScrapingDialog({
           </div>
 
           {error ? <div className="error-banner">{error}</div> : null}
+          {!ENABLE_SCRAPING ? (
+            <div className="error-banner">Scraping is disabled for this deployed frontend. Run scraping locally.</div>
+          ) : null}
         </div>
 
         <footer className="scrape-modal-footer">

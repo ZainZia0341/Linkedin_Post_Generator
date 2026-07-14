@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, Brain, ExternalLink, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { DEFAULT_USER_ID, fetchRecentActivities, fetchUserData } from "@/lib/api";
+import { DEFAULT_USER_ID, ENABLE_SCRAPING, fetchRecentActivities, fetchUserData } from "@/lib/api";
 import {
   activityTitle,
   compactDate,
@@ -143,7 +143,12 @@ export function DashboardView() {
               <article className="empty-card wide">
                 <h4>No saved posts in the current 24-hour window</h4>
                 <p>Run the scraper from the backend workflow to fill this list.</p>
-                <button className="secondary-button compact" type="button">
+                <button
+                  className="secondary-button compact"
+                  type="button"
+                  disabled={!ENABLE_SCRAPING}
+                  title={ENABLE_SCRAPING ? "Run scraper" : "Run scraping locally"}
+                >
                   <RefreshCw size={15} />
                   Run scraper
                 </button>
