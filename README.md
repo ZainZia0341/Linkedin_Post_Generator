@@ -264,3 +264,14 @@ The existing backend Docker image starts:
 
 Deployment secrets should not be committed. Keep local secrets in
 `backend/.env`; configure production secrets in the hosting platform.
+
+
+# vercel Production link (main)
+https://linkedin-post-generator-lyart.vercel.app
+
+# vercel Preview link (dev)
+https://linkedin-post-generator-git-dev-zain-zias-projects.vercel.app/dashboard
+
+# Lambda backend url dev
+https://ysshbf0inb.execute-api.us-east-2.amazonaws.com
+
