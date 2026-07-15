@@ -205,6 +205,11 @@ class DynamoRepository:
             {"user_creator_id": f"{user_id}#{creator_id}", "post_id": post_id},
         )
 
+    def delete_activity(self, user_id: str, creator_id: str, post_id: str) -> None:
+        self._table(self.activities_table_name).delete_item(
+            Key={"user_creator_id": f"{user_id}#{creator_id}", "post_id": post_id}
+        )
+
     def list_creator_activities(
         self,
         user_id: str,

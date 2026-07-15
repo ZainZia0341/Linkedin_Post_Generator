@@ -69,6 +69,9 @@ class MemoryRepo:
     def get_activity(self, user_id: str, creator_id: str, post_id: str):
         return self.activities.get((user_id, creator_id, post_id))
 
+    def delete_activity(self, user_id: str, creator_id: str, post_id: str):
+        self.activities.pop((user_id, creator_id, post_id), None)
+
     def list_creator_activities(self, user_id: str, creator_id: str, limit: int | None = None):
         activities = [
             activity
@@ -305,11 +308,27 @@ def test_recent_24h_scrape_returns_seen_posts_again_and_filters_old(monkeypatch)
             "raw_text": "Previously saved version of a recent creator post.",
             "author_name": "Recent Person",
             "posted_at_text": "1h",
-            "fetched_at": "2026-07-02T00:00:00+00:00",
+            "fetched_at": services.now_iso(),
             "content_hash": "hash-recent-seen",
             "source": "playwright",
             "is_new": True,
             "engagement": {"comment": {"commented": True, "text": "Already commented."}},
+        }
+    )
+    repo.put_activity(
+        {
+            "user_creator_id": "test-user-1#recent-person",
+            "user_id": "test-user-1",
+            "creator_id": "recent-person",
+            "post_id": "urn:li:activity:stale-stored",
+            "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:stale-stored/",
+            "raw_text": "Stored post from an old scrape that should be pruned.",
+            "author_name": "Recent Person",
+            "posted_at_text": "1h",
+            "fetched_at": "2020-01-01T00:00:00+00:00",
+            "content_hash": "hash-stale-stored",
+            "source": "playwright",
+            "is_new": True,
         }
     )
 
@@ -359,6 +378,7 @@ def test_recent_24h_scrape_returns_seen_posts_again_and_filters_old(monkeypatch)
     assert returned["urn:li:activity:recent-seen"].is_new is False
     assert returned["urn:li:activity:recent-new"].is_new is True
     assert repo.get_activity("test-user-1", "recent-person", "urn:li:activity:old-post") is None
+    assert repo.get_activity("test-user-1", "recent-person", "urn:li:activity:stale-stored") is None
     stored_seen = repo.get_activity("test-user-1", "recent-person", "urn:li:activity:recent-seen")
     assert stored_seen["engagement"]["comment"]["commented"] is True
     assert stored_seen["raw_text"] == "Updated scrape text for the same recent creator post."

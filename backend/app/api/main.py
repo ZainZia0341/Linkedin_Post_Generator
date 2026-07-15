@@ -457,7 +457,7 @@ def list_recent_user_activities(
     user_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
     limit: int = Query(default=API_LIST_LIMIT, ge=1, le=500),
-    window_hours: int = Query(default=24, ge=1, le=168),
+    window_hours: int = Query(default=24, ge=1, le=72),
 ) -> RecentActivitiesResponse:
     try:
         return list_recent_activities_from_db(repo, user_id, limit, window_hours)

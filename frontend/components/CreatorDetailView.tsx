@@ -99,14 +99,21 @@ export function CreatorDetailView({ creatorId }: { creatorId: string }) {
   }
 
   async function copyProfileInfo() {
-    const lines = [
-      creatorName,
-      profileUnavailable ? "Profile not found or unavailable" : profile?.headline,
-      profileUnavailable ? "" : profile?.about,
-      profileUnavailable ? "" : profile?.location,
-      profileEmail,
-    ].filter(Boolean);
-    await navigator.clipboard.writeText(lines.join("\n"));
+    await navigator.clipboard.writeText(
+      formatCreatorProfileForClipboard({
+        name: creatorName,
+        headline: profileUnavailable ? "Profile not found or unavailable" : profile?.headline || "Not saved",
+        about: profileUnavailable ? "Profile not found or unavailable" : profile?.about || "Not saved",
+        experience: profileUnavailable
+          ? "Profile not found or unavailable"
+          : profile?.experience?.length
+            ? profile.experience.join("\n")
+            : "Not saved",
+        location: profileUnavailable ? "Profile not found" : profile?.location || "Not saved",
+        linkedIn: profileUrl || "Not saved",
+        email: profileEmail || "Not saved",
+      }),
+    );
     showSuccess("Creator information copied");
   }
 
@@ -350,6 +357,39 @@ function safeCreatorName(
 ) {
   if (profile?.name && !isBadScrapedText(profile.name)) return profile.name;
   return creator?.display_name || creatorId;
+}
+
+function formatCreatorProfileForClipboard(profile: {
+  name: string;
+  headline: string;
+  about: string;
+  experience: string;
+  location: string;
+  linkedIn: string;
+  email: string;
+}) {
+  return [
+    "Name",
+    profile.name,
+    "",
+    "Headline",
+    profile.headline,
+    "",
+    "About",
+    profile.about,
+    "",
+    "Experience",
+    profile.experience,
+    "",
+    "Location",
+    profile.location,
+    "",
+    "LinkedIn",
+    profile.linkedIn,
+    "",
+    "Email",
+    profile.email,
+  ].join("\n");
 }
 
 type ScrapeHistoryRow = {

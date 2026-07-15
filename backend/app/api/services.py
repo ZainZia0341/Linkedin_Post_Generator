@@ -72,6 +72,7 @@ LINKEDIN_URL_RE = re.compile(r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?linkedin\.
 CREATOR_IMPORT_EXISTING_LIMIT = 1000
 RECENTLY_ADDED_WINDOW_DAYS = 7
 SCRAPING_STALE_AFTER_HOURS = 24
+RECENT_ACTIVITY_RETENTION_DAYS = 3
 DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS = 3
 
 SAVED_ACTIONS = [
@@ -863,6 +864,29 @@ def _is_post_inside_window(raw_post: dict[str, Any], window_hours: int) -> bool:
     return posted_at >= datetime.now(UTC) - timedelta(hours=window_hours)
 
 
+def prune_old_activities(
+    repo: DynamoRepository,
+    user_id: str,
+    retention_days: int = RECENT_ACTIVITY_RETENTION_DAYS,
+) -> int:
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    deleted_count = 0
+    for creator in repo.list_creators(user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT):
+        creator_id = str(creator.get("creator_id", ""))
+        if not creator_id:
+            continue
+        for activity in repo.list_creator_activities(user_id, creator_id, limit=CREATOR_IMPORT_EXISTING_LIMIT):
+            fetched_at = _parse_activity_datetime(activity.get("fetched_at"))
+            if fetched_at is None or fetched_at >= cutoff:
+                continue
+            post_id = str(activity.get("post_id", ""))
+            if not post_id:
+                continue
+            repo.delete_activity(user_id, creator_id, post_id)
+            deleted_count += 1
+    return deleted_count
+
+
 def _normalize_activity(user_id: str, creator: dict[str, Any], raw_post: dict[str, Any], is_new: bool) -> dict[str, Any]:
     raw_text = str(raw_post.get("raw_text", "")).strip()
     content_hash = str(
@@ -892,6 +916,9 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
     if request.creator_ids:
         creator_id_set = set(request.creator_ids)
         creators = [creator for creator in creators if creator["creator_id"] in creator_id_set]
+    pruned_count = prune_old_activities(repo, request.user_id)
+    if pruned_count:
+        print(f"Pruned {pruned_count} scraped post(s) older than {RECENT_ACTIVITY_RETENTION_DAYS} days.")
 
     errors: list[dict[str, str]] = []
     new_activities: list[ActivityResponse] = []
@@ -963,6 +990,9 @@ def scrape_creators_recent_24h(
     if request.creator_ids:
         creator_id_set = set(request.creator_ids)
         creators = [creator for creator in creators if creator["creator_id"] in creator_id_set]
+    pruned_count = prune_old_activities(repo, request.user_id)
+    if pruned_count:
+        print(f"Pruned {pruned_count} scraped post(s) older than {RECENT_ACTIVITY_RETENTION_DAYS} days.")
 
     errors: list[dict[str, str]] = []
     activities: list[ActivityResponse] = []
@@ -1038,6 +1068,7 @@ def list_all_activities(repo: DynamoRepository, user_id: str, limit: int | None 
             _activity_response(activity)
             for activity in repo.list_creator_activities(user_id, creator["creator_id"], limit or API_LIST_LIMIT)
     )
+    activities.sort(key=lambda item: item.fetched_at, reverse=True)
     return activities[: limit or API_LIST_LIMIT]
 
 

@@ -4,15 +4,12 @@ import {
   CheckCircle2,
   Copy,
   ExternalLink,
-  MessageSquareText,
   Search,
-  Sparkles,
   Trash2,
   X,
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { RunScrapingDialog } from "@/components/RunScrapingDialog";
 import {
@@ -25,10 +22,9 @@ import {
 import { activityTitle, compactDate, displayName, initials, previewText, sortThreads } from "@/lib/format";
 import type { ActivityResponse, CreatorProfileDetailsResponse, CreatorResponse, UserDataResponse } from "@/lib/types";
 
-const POSTS_PAGE_SIZE = 3;
+const POSTS_PAGE_SIZE = 9;
 
 export function PostsScrapingView() {
-  const router = useRouter();
   const [userData, setUserData] = useState<UserDataResponse | null>(null);
   const [activities, setActivities] = useState<ActivityResponse[]>([]);
   const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
@@ -102,35 +98,29 @@ export function PostsScrapingView() {
       return sortOrder === "newest" ? rightTime - leftTime : leftTime - rightTime;
     });
   }, [activities, creatorById, creatorFilter, profileMap, query, sortOrder, windowHours]);
-  const latestScrapePosts = filteredActivities.filter((activity) => activity.is_new);
-  const totalPages = Math.max(1, Math.ceil(latestScrapePosts.length / POSTS_PAGE_SIZE));
+  const visiblePosts = filteredActivities;
+  const newPosts = filteredActivities.filter(isFetchedWithinLastDay);
+  const totalPages = Math.max(1, Math.ceil(visiblePosts.length / POSTS_PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
-  const pageStart = latestScrapePosts.length ? (safePage - 1) * POSTS_PAGE_SIZE : 0;
-  const pageEnd = Math.min(pageStart + POSTS_PAGE_SIZE, latestScrapePosts.length);
-  const visibleLatestScrapePosts = latestScrapePosts.slice(pageStart, pageEnd);
+  const pageStart = visiblePosts.length ? (safePage - 1) * POSTS_PAGE_SIZE : 0;
+  const pageEnd = Math.min(pageStart + POSTS_PAGE_SIZE, visiblePosts.length);
+  const pagedPosts = visiblePosts.slice(pageStart, pageEnd);
   const lastScrapeAt = creators
     .map((creator) => creator.last_checked_at)
     .filter(Boolean)
     .sort((left, right) => new Date(right || "").getTime() - new Date(left || "").getTime())[0];
   const metrics = {
     total: activities.length,
-    newPosts: latestScrapePosts.length,
+    newPosts: newPosts.length,
     lastScrape: lastScrapeAt ? compactDate(lastScrapeAt) : "No scrape",
   };
-
-  function openCommentGeneration(activity: ActivityResponse) {
-    const params = new URLSearchParams({
-      creator_id: activity.creator_id,
-      post_id: activity.post_id,
-    });
-    router.push(`/comments/generate?${params.toString()}`);
-  }
 
   return (
     <AppShell
       active="posts"
-      title="Creator Posts & Scraping"
-      subtitle="Browse scraped LinkedIn posts and generate AI content."
+      title="Ready to Comment"
+      subtitle="Browse recent LinkedIn posts from tracked creators."
+      eyebrowLabel={null}
       userName={userName}
       threads={sortedThreads}
     >
@@ -169,11 +159,9 @@ export function PostsScrapingView() {
           </select>
           <select value={windowHours} onChange={(event) => setWindowHours(Number(event.target.value))} aria-label="Time window filter">
             <option value={12}>Last 12 Hours</option>
-            <option value={24}>Last 24 Hours</option>
-            <option value={48}>Last 48 Hours</option>
+            <option value={24}>Last Day</option>
+            <option value={48}>Last 2 Days</option>
             <option value={72}>Last 3 Days</option>
-            <option value={96}>Last 4 Days</option>
-            <option value={168}>Last 7 Days</option>
           </select>
           <select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")} aria-label="Sort filter">
             <option value="newest">Newest First</option>
@@ -184,44 +172,26 @@ export function PostsScrapingView() {
         {error ? <div className="error-banner">{error}</div> : null}
         {loading ? <div className="empty-card slim">Loading scraped posts...</div> : null}
 
-        <section className="latest-scrape-banner">
-          <div className="metric-icon">
-            <Sparkles size={18} />
-          </div>
-          <div>
-            <strong>Latest Scraping Results</strong>
-            <p>{metrics.newPosts} new posts were discovered during recent scraping.</p>
-          </div>
-          <small>{lastScrapeAt ? `Completed ${metrics.lastScrape}` : "No scrape completed"}</small>
-        </section>
-
         <section className="posts-section">
-          <div className="posts-section-heading">
-            <div>
-              <h2>Latest Scrape <span>{latestScrapePosts.length} Posts</span></h2>
-              <p>Posts discovered during the most recent scraping job.</p>
-            </div>
-          </div>
           <div className="scraped-post-list">
-            {visibleLatestScrapePosts.length ? (
-              visibleLatestScrapePosts.map((activity) => (
+            {pagedPosts.length ? (
+              pagedPosts.map((activity) => (
                 <ScrapedPostCard
                   activity={activity}
                   creator={creatorById.get(activity.creator_id)}
                   profile={profileMap.get(activity.creator_id)}
-                  onGenerateComment={openCommentGeneration}
                   onOpenDetails={setSelectedPost}
                   key={`${activity.creator_id}-${activity.post_id}`}
                 />
               ))
             ) : (
-              <div className="empty-mini">No latest scrape posts match the current filters.</div>
+              <div className="empty-mini">No posts match the current filters.</div>
             )}
           </div>
-          {latestScrapePosts.length ? (
+          {visiblePosts.length ? (
             <div className="posts-pagination">
               <span>
-                Showing {pageStart + 1} to {pageEnd} of {latestScrapePosts.length} posts
+                Showing {pageStart + 1} to {pageEnd} of {visiblePosts.length} posts
               </span>
               <div className="pagination-controls" aria-label="Scraped posts pagination">
                 <button
@@ -266,7 +236,6 @@ export function PostsScrapingView() {
           creator={creatorById.get(selectedPost.creator_id)}
           profile={profileMap.get(selectedPost.creator_id)}
           onClose={() => setSelectedPost(null)}
-          onGenerateComment={openCommentGeneration}
         />
       ) : null}
 
@@ -293,19 +262,18 @@ function ScrapedPostCard({
   activity,
   creator,
   profile,
-  onGenerateComment,
   onOpenDetails,
   muted = false,
 }: {
   activity: ActivityResponse;
   creator?: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
-  onGenerateComment: (activity: ActivityResponse) => void;
   onOpenDetails: (activity: ActivityResponse) => void;
   muted?: boolean;
 }) {
   const name = profile?.name || activity.author_name || creator?.display_name || activityTitle(activity);
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
+  const isNew = isFetchedWithinLastDay(activity);
 
   async function copyPostText() {
     await navigator.clipboard.writeText(activity.raw_text);
@@ -328,8 +296,8 @@ function ScrapedPostCard({
           </span>
         </div>
         <div className="post-card-flags">
-          <span className={activity.is_new ? "status-pill success" : "status-pill neutral"}>
-            {activity.is_new ? "New" : "Saved"}
+          <span className={isNew ? "status-pill success" : "status-pill neutral"}>
+            {isNew ? "New" : "Old"}
           </span>
         </div>
       </header>
@@ -338,13 +306,8 @@ function ScrapedPostCard({
       </button>
       <div className="post-card-meta">
         <span>Fetched {compactDate(activity.fetched_at)}</span>
-        <span>{activity.source || "playwright"}</span>
       </div>
       <footer className="post-card-actions">
-        <button className="secondary-button compact" type="button" onClick={() => onGenerateComment(activity)}>
-          <MessageSquareText size={15} />
-          Generate Comment
-        </button>
         <button className="icon-button tiny copy-post-button" type="button" onClick={() => void copyPostText()} aria-label="Copy post text">
           <Copy size={15} />
         </button>
@@ -361,13 +324,11 @@ function ScrapedPostDetailsDrawer({
   creator,
   profile,
   onClose,
-  onGenerateComment,
 }: {
   activity: ActivityResponse;
   creator?: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
   onClose: () => void;
-  onGenerateComment: (activity: ActivityResponse) => void;
 }) {
   const name = profile?.name || activity.author_name || creator?.display_name || activity.creator_id;
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
@@ -377,8 +338,14 @@ function ScrapedPostDetailsDrawer({
   }
 
   return (
-    <div className="drawer-backdrop">
-      <aside className="post-detail-panel" role="dialog" aria-modal="true" aria-labelledby="post-detail-title">
+    <div className="drawer-backdrop" onClick={onClose}>
+      <aside
+        className="post-detail-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="post-detail-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="drawer-header compact-header">
           <div>
             <h2 id="post-detail-title">Scraped Post Details</h2>
@@ -449,9 +416,6 @@ function ScrapedPostDetailsDrawer({
           </section>
         </div>
         <footer className="post-detail-footer">
-          <button className="secondary-button" type="button" onClick={() => onGenerateComment(activity)}>
-            Generate Comment
-          </button>
           <button className="secondary-button" type="button" onClick={onClose}>
             Close
           </button>
@@ -473,4 +437,10 @@ function isWithinWindow(value: string, windowHours: number) {
   const time = new Date(value).getTime();
   if (Number.isNaN(time)) return true;
   return Date.now() - time <= windowHours * 60 * 60 * 1000;
+}
+
+function isFetchedWithinLastDay(activity: ActivityResponse) {
+  const time = new Date(activity.fetched_at).getTime();
+  if (Number.isNaN(time)) return false;
+  return Date.now() - time <= 24 * 60 * 60 * 1000;
 }

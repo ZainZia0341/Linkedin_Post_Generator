@@ -176,7 +176,7 @@ export function CommentGenerationView() {
             <ArrowLeft size={18} />
           </Link>
           <div>
-            <p className="breadcrumb-inline">Creator Posts & Scraping / Comment Generation</p>
+            <p className="breadcrumb-inline">Ready to Comment / Comment Generation</p>
             <h2>Generate Comment</h2>
             <span>Create high-engagement replies for LinkedIn author posts.</span>
           </div>

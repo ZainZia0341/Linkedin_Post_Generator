@@ -62,13 +62,12 @@ async function proxy(request: NextRequest, context: RouteContext) {
       headers: responseHeaders,
     });
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Backend request failed.";
     const message = error instanceof Error && error.name === "AbortError"
       ? timeoutMs
         ? `Backend request timed out after ${timeoutMs / 1000}s.`
         : "Backend request was aborted."
-      : error instanceof Error
-        ? error.message
-        : "Backend request failed.";
+      : `Backend request failed while calling ${targetUrl.origin}. ${errorMessage} Check API_BASE_URL/NEXT_PUBLIC_API_BASE_URL and confirm the FastAPI backend is running.`;
     return Response.json({ detail: message }, { status: 502 });
   } finally {
     if (timeout) clearTimeout(timeout);

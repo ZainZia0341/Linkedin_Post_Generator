@@ -19,11 +19,9 @@ type RunScrapingDialogProps = {
 
 const WINDOW_OPTIONS = [
   { label: "Last 12h", value: 12 },
-  { label: "Last 24 Hours", value: 24 },
-  { label: "Last 48 Hours", value: 48 },
+  { label: "Last Day", value: 24 },
+  { label: "Last 2 Days", value: 48 },
   { label: "Last 3 Days", value: 72 },
-  { label: "Last 4 Days", value: 96 },
-  { label: "Last 7 Days", value: 168 },
 ];
 
 export function RunScrapingDialog({

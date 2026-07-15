@@ -18,6 +18,7 @@ type AppShellProps = {
   active: "dashboard" | "generate" | "brainstorm" | "creators" | "posts" | "activity" | "engagement" | "history" | "settings";
   title: string;
   subtitle?: string;
+  eyebrowLabel?: string | null;
   userName: string;
   userTitle?: string;
   threads?: ThreadSummary[];
@@ -29,19 +30,21 @@ const navItems = [
   { key: "generate", label: "Generate", href: "/generate", icon: Sparkles },
   { key: "brainstorm", label: "Brainstorm", href: "", icon: Brain },
   { key: "creators", label: "Creators", href: "/creators", icon: Users },
-  { key: "posts", label: "Posts & Scraping", href: "/posts-scraping", icon: Rss },
+  { key: "posts", label: "Ready to Comment", href: "/posts-scraping", icon: Rss },
 ] as const;
 
 export function AppShell({
   active,
   title,
   subtitle,
+  eyebrowLabel,
   userName,
   userTitle = "",
   children,
 }: AppShellProps) {
   const displayUserName = userName || "User";
   const userInitials = initials(displayUserName);
+  const resolvedEyebrow = eyebrowLabel === undefined ? active : eyebrowLabel;
 
   return (
     <div className="app-shell">
@@ -90,7 +93,7 @@ export function AppShell({
       <main className="main-area">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{active}</p>
+            {resolvedEyebrow ? <p className="eyebrow">{resolvedEyebrow}</p> : null}
             <h1>{title}</h1>
             {subtitle ? <p>{subtitle}</p> : null}
           </div>

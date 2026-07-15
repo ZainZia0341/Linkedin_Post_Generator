@@ -5,6 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  Copy,
   ExternalLink,
   FileUp,
   FileText,
@@ -47,7 +48,6 @@ export function CreatorsView() {
   const [userData, setUserData] = useState<UserDataResponse | null>(null);
   const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("All");
   const [lastCheckedSort, setLastCheckedSort] = useState<LastCheckedSort>("desc");
   const [sortBy, setSortBy] = useState<CreatorSortBy>("recently_added");
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
@@ -88,7 +88,7 @@ export function CreatorsView() {
 
   useEffect(() => {
     setPage(1);
-  }, [query, sortBy, statusFilter]);
+  }, [query, sortBy]);
 
   const creators = userData?.creators ?? [];
   const sortedThreads = useMemo(() => sortThreads(userData?.threads ?? []), [userData?.threads]);
@@ -105,13 +105,9 @@ export function CreatorsView() {
         creator.profile_url,
       ].join(" ").toLowerCase();
       const matchesQuery = !normalized || text.includes(normalized);
-      const status = creatorStatus(creator);
-      const matchesStatus =
-        statusFilter === "All" ||
-        statusFilter === status;
-      return matchesQuery && matchesStatus;
+      return matchesQuery;
     }).sort((left, right) => compareCreators(left, right, sortBy, profileMap));
-  }, [creators, profileMap, query, sortBy, statusFilter]);
+  }, [creators, profileMap, query, sortBy]);
   const totalPages = Math.max(1, Math.ceil(filteredCreators.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pageStart = filteredCreators.length ? (safePage - 1) * PAGE_SIZE : 0;
@@ -120,6 +116,7 @@ export function CreatorsView() {
   const visibleCreatorIds = visibleCreators.map((creator) => creator.creator_id);
   const allVisibleSelected = visibleCreatorIds.length > 0 && visibleCreatorIds.every((creatorId) => selectedCreatorIds.has(creatorId));
   const someVisibleSelected = visibleCreatorIds.some((creatorId) => selectedCreatorIds.has(creatorId));
+  const selectedCreators = creators.filter((creator) => selectedCreatorIds.has(creator.creator_id));
 
   const stats = userData?.dashboard_stats;
 
@@ -153,6 +150,20 @@ export function CreatorsView() {
     if (nextSort === "last_checked_asc") setLastCheckedSort("asc");
   }
 
+  async function copyCreatorProfile(creator: CreatorResponse) {
+    await navigator.clipboard.writeText(formatCreatorForClipboard(creator, profileMap.get(creator.creator_id)));
+    showSuccess("Creator profile copied");
+  }
+
+  async function copySelectedProfiles() {
+    if (!selectedCreators.length) return;
+    const text = selectedCreators
+      .map((creator, index) => formatCreatorForClipboard(creator, profileMap.get(creator.creator_id), index + 1))
+      .join("\n\n");
+    await navigator.clipboard.writeText(text);
+    showSuccess(`${selectedCreators.length} creator profile${selectedCreators.length === 1 ? "" : "s"} copied`);
+  }
+
   return (
     <AppShell
       active="creators"
@@ -177,7 +188,7 @@ export function CreatorsView() {
 
       <section className="creator-metric-grid">
         <CreatorMetric icon={<Users size={20} />} label="Total Creators" value={(stats?.creator_count ?? 0).toString()} />
-        <CreatorMetric icon={<FileText size={20} />} label="New Posts 24h" value={(stats?.new_posts_today_count ?? 0).toString()} />
+        <CreatorMetric icon={<FileText size={20} />} label="New post (last 24 h)" value={(stats?.new_posts_today_count ?? 0).toString()} />
         <CreatorMetric icon={<Plus size={20} />} label="Recently Added" value={(stats?.recently_added_count ?? 0).toString()} />
       </section>
 
@@ -192,19 +203,6 @@ export function CreatorsView() {
             />
           </label>
 
-          <div className="filter-tabs" aria-label="Creator status filters">
-            {["All", "Never Scraped"].map((filter) => (
-              <button
-                className={statusFilter === filter ? "selected" : ""}
-                type="button"
-                onClick={() => setStatusFilter(filter)}
-                key={filter}
-              >
-                {filter}
-              </button>
-            ))}
-          </div>
-
           <label className="sort-control">
             <span>Sort by:</span>
             <select value={sortBy} onChange={(event) => changeCreatorSort(event.target.value as CreatorSortBy)}>
@@ -215,6 +213,19 @@ export function CreatorsView() {
               <option value="name_asc">Name A-Z</option>
             </select>
           </label>
+
+          <div className="selection-copy-row">
+            <span>{selectedCreators.length} selected</span>
+            <button
+              className="secondary-button compact"
+              type="button"
+              onClick={() => void copySelectedProfiles()}
+              disabled={!selectedCreators.length}
+            >
+              <Copy size={14} />
+              Copy
+            </button>
+          </div>
         </div>
 
         {error ? <div className="error-banner">{error}</div> : null}
@@ -253,8 +264,8 @@ export function CreatorsView() {
                     {lastCheckedSort === "desc" ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
                   </button>
                 </th>
-                <th>New Posts</th>
-                <th>Status</th>
+                <th>New post (last 24 h)</th>
+                <th>Profile</th>
               </tr>
             </thead>
             <tbody>
@@ -265,6 +276,7 @@ export function CreatorsView() {
                     profile={profileMap.get(creator.creator_id)}
                     selected={selectedCreatorIds.has(creator.creator_id)}
                     onToggleSelected={toggleCreatorSelection}
+                    onCopyProfile={copyCreatorProfile}
                     key={creator.creator_id}
                   />
                 ))
@@ -358,11 +370,6 @@ function CreatorMetric({
       <strong>{value}</strong>
     </article>
   );
-}
-
-function creatorStatus(creator: CreatorResponse) {
-  if (!creator.last_checked_at) return "Never Scraped";
-  return "Up To Date";
 }
 
 function compareCreators(
@@ -486,17 +493,17 @@ function CreatorRow({
   profile,
   selected,
   onToggleSelected,
+  onCopyProfile,
 }: {
   creator: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
   selected: boolean;
   onToggleSelected: (creatorId: string) => void;
+  onCopyProfile: (creator: CreatorResponse) => void;
 }) {
   const label = safeProfileName(profile, creator);
   const headline = safeProfileHeadline(profile, creator);
   const profileImageUrl = safeProfileImageUrl(profile);
-  const status = creatorStatus(creator);
-  const statusClass = status === "Up To Date" ? "status-pill success" : "status-pill neutral";
   return (
     <tr>
       <td className="select-column">
@@ -532,10 +539,49 @@ function CreatorRow({
       <td>{creator.last_checked_at ? compactDate(creator.last_checked_at) : "Never"}</td>
       <td>{creator.new_count ? `${creator.new_count} New` : "0 Posts"}</td>
       <td>
-        <span className={statusClass}>{status}</span>
+        <button className="icon-button tiny" type="button" onClick={() => onCopyProfile(creator)} aria-label={`Copy ${label} profile`}>
+          <Copy size={15} />
+        </button>
       </td>
     </tr>
   );
+}
+
+function formatCreatorForClipboard(
+  creator: CreatorResponse,
+  profile?: CreatorProfileDetailsResponse,
+  index?: number,
+) {
+  const name = safeProfileName(profile, creator);
+  const about = profileLooksUnavailable(profile)
+    ? "Profile not found or unavailable"
+    : profile?.about || "Not saved";
+  const experience = profileLooksUnavailable(profile)
+    ? "Profile not found or unavailable"
+    : profile?.experience?.length
+      ? profile.experience.join("\n")
+      : "Not saved";
+  const lines = [
+    index ? String(index) : "",
+    "Name",
+    name,
+    "",
+    "Headline",
+    safeProfileHeadline(profile, creator),
+    "",
+    "About",
+    about,
+    "",
+    "Experience",
+    experience,
+    "",
+    "Location",
+    profileLooksUnavailable(profile) ? "Profile not found" : profile?.location || "Not saved",
+    "",
+    "LinkedIn",
+    creator.profile_url || profile?.profile_url || "Not saved",
+  ];
+  return lines.join("\n").trim();
 }
 
 function AddCreatorDialog({

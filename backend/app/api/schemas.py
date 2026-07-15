@@ -142,7 +142,7 @@ class RecentScrapeCreatorsRequest(BaseModel):
     user_id: str
     creator_ids: list[str] | None = None
     max_posts: int = 5
-    window_hours: int = Field(default=24, ge=1, le=168)
+    window_hours: int = Field(default=24, ge=1, le=72)
     launch_delay_seconds: float = Field(default=3, ge=0, le=60)
 
 
