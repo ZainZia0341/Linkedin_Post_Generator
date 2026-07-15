@@ -23,3 +23,16 @@ backend/dynamodb_localdb/*
 backend/.run_logs/
 __pycache__/
 *.pyc
+
+
+# Serverless directories
+.serverless/
+
+# Environment variables
+.env
+.env.*
+
+.streamlit
+
+.serverless/
+serverless/
