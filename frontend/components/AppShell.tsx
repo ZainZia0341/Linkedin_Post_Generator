@@ -4,6 +4,7 @@ import Link from "next/link";
 import {
   Bell,
   Brain,
+  Clock,
   LayoutDashboard,
   PenLine,
   Rss,
@@ -12,7 +13,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ThreadSummary } from "@/lib/types";
-import { initials } from "@/lib/format";
+import { compactDate, initials, threadTitle } from "@/lib/format";
 
 type AppShellProps = {
   active: "dashboard" | "generate" | "brainstorm" | "creators" | "posts" | "activity" | "engagement" | "history" | "settings";
@@ -40,11 +41,13 @@ export function AppShell({
   eyebrowLabel,
   userName,
   userTitle = "",
+  threads = [],
   children,
 }: AppShellProps) {
   const displayUserName = userName || "User";
   const userInitials = initials(displayUserName);
   const resolvedEyebrow = eyebrowLabel === undefined ? active : eyebrowLabel;
+  const recentThreads = threads.filter((thread) => thread.topic_source !== "comment_generation").slice(0, 5);
 
   return (
     <div className="app-shell">
@@ -80,6 +83,29 @@ export function AppShell({
             );
           })}
         </nav>
+
+        {recentThreads.length ? (
+          <section className="sidebar-section" aria-label="Recent threads">
+            <div className="sidebar-section-title">
+              <Clock size={14} />
+              <span>Recent Threads</span>
+            </div>
+            <div className="thread-list">
+              {recentThreads.map((thread) => (
+                <Link
+                  className="thread-link"
+                  href={`/generate?thread_id=${encodeURIComponent(thread.thread_id)}`}
+                  key={thread.thread_id}
+                >
+                  <span>
+                    <strong>{threadTitle(thread)}</strong>
+                    <small>{compactDate(thread.updated_at) || "Recent"}</small>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <div className="sidebar-user">
           <div className="avatar small">{userInitials}</div>

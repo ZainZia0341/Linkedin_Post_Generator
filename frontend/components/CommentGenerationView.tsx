@@ -15,6 +15,7 @@ import {
   generateComment,
   markComment,
 } from "@/lib/api";
+import { COMMENT_STYLE_OPTIONS, COMMENT_TONE_OPTIONS, LENGTH_OPTIONS } from "@/lib/constants";
 import { compactDate, displayName, initials, previewText, sortThreads } from "@/lib/format";
 import type { ActivityResponse, CommentResponse, CreatorProfileDetailsResponse, UserDataResponse } from "@/lib/types";
 
@@ -23,14 +24,11 @@ type CommentVariant = {
   label: string;
   topic: string;
   comment: string;
+  threadId: string;
+  tone: string;
+  length: string;
   generatedAt?: string;
 };
-
-const VARIANT_TOPICS = [
-  { id: "add-value", label: "Add Value", topic: "Add Value" },
-  { id: "challenge", label: "Challenge", topic: "Challenge" },
-  { id: "expert", label: "Expert Insight", topic: "Expert Insight" },
-];
 
 export function CommentGenerationView() {
   const searchParams = useSearchParams();
@@ -40,8 +38,8 @@ export function CommentGenerationView() {
   const [activity, setActivity] = useState<ActivityResponse | null>(null);
   const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
   const [style, setStyle] = useState("Add Value");
-  const [tone, setTone] = useState("Professional");
-  const [length, setLength] = useState("Medium");
+  const [tone, setTone] = useState(COMMENT_TONE_OPTIONS[0]);
+  const [length, setLength] = useState(LENGTH_OPTIONS[1]);
   const [variants, setVariants] = useState<CommentVariant[]>([]);
   const [selected, setSelected] = useState<CommentVariant | null>(null);
   const [editing, setEditing] = useState<CommentVariant | null>(null);
@@ -61,7 +59,7 @@ export function CommentGenerationView() {
     try {
       const [dataResult, activityResult, profileResult] = await Promise.allSettled([
         fetchUserData(DEFAULT_USER_ID),
-        fetchUserActivities(DEFAULT_USER_ID, 200),
+        fetchUserActivities(DEFAULT_USER_ID, 100),
         fetchCreatorProfiles(DEFAULT_USER_ID, 500),
       ]);
       if (dataResult.status === "rejected") throw dataResult.reason;
@@ -101,7 +99,9 @@ export function CommentGenerationView() {
     try {
       const orderedTopics = [
         { id: "primary", label: style, topic: style },
-        ...VARIANT_TOPICS.filter((topic) => topic.topic !== style),
+        ...COMMENT_STYLE_OPTIONS
+          .filter((topic) => topic !== style)
+          .map((topic) => ({ id: topic.toLowerCase().replace(/\s+/g, "-"), label: topic, topic })),
       ].slice(0, 3);
       const responses = await Promise.all(
         orderedTopics.map((topic) =>
@@ -109,15 +109,20 @@ export function CommentGenerationView() {
             user_id: DEFAULT_USER_ID,
             creator_id: activity.creator_id,
             post_id: activity.post_id,
-            comment_topic: `${topic.topic}. Tone: ${tone}. Length: ${length}.`,
+            style: topic.topic,
+            tone,
+            length,
           }),
         ),
       );
       const nextVariants = responses.map((response: CommentResponse, index) => ({
         id: orderedTopics[index].id,
         label: orderedTopics[index].label,
-        topic: response.comment_topic || orderedTopics[index].topic,
+        topic: response.style || response.comment_topic || orderedTopics[index].topic,
         comment: response.comment,
+        threadId: response.thread_id || "",
+        tone: response.tone || tone,
+        length: response.length || length,
         generatedAt: response.generated_at,
       }));
       setVariants(nextVariants);
@@ -145,7 +150,11 @@ export function CommentGenerationView() {
         current.map((variant) => variant.id === editing?.id ? { ...variant, comment } : variant),
       );
       if (selected?.id === editing?.id || !selected) {
-        setSelected(editing ? { ...editing, comment } : { id: "saved", label: style, topic: style, comment });
+        setSelected(
+          editing
+            ? { ...editing, comment }
+            : { id: "saved", label: style, topic: style, comment, threadId: "", tone, length },
+        );
       }
       setEditing(null);
       showSuccess(commented ? "Comment marked as completed" : "Comment saved");
@@ -160,6 +169,23 @@ export function CommentGenerationView() {
     if (!selected) return;
     await navigator.clipboard.writeText(selected.comment);
     showSuccess("Comment copied");
+  }
+
+  function handleEditorUpdated(response: CommentResponse) {
+    if (!editing) return;
+    const updated = {
+      ...editing,
+      comment: response.comment,
+      topic: response.style || response.comment_topic || editing.topic,
+      label: response.style || editing.label,
+      threadId: response.thread_id || editing.threadId,
+      tone: response.tone || editing.tone,
+      length: response.length || editing.length,
+      generatedAt: response.generated_at || editing.generatedAt,
+    };
+    setEditing(updated);
+    setVariants((current) => current.map((variant) => (variant.id === updated.id ? updated : variant)));
+    if (selected?.id === updated.id) setSelected(updated);
   }
 
   return (
@@ -217,7 +243,7 @@ export function CommentGenerationView() {
               <label>
                 <span>Style</span>
                 <select value={style} onChange={(event) => setStyle(event.target.value)}>
-                  {["Add Value", "Challenge", "Expert Insight", "Agree", "Congratulate"].map((item) => (
+                  {COMMENT_STYLE_OPTIONS.map((item) => (
                     <option value={item} key={item}>{item}</option>
                   ))}
                 </select>
@@ -225,7 +251,7 @@ export function CommentGenerationView() {
               <label>
                 <span>Tone</span>
                 <select value={tone} onChange={(event) => setTone(event.target.value)}>
-                  {["Professional", "Human", "Founder", "Direct"].map((item) => (
+                  {COMMENT_TONE_OPTIONS.map((item) => (
                     <option value={item} key={item}>{item}</option>
                   ))}
                 </select>
@@ -233,7 +259,7 @@ export function CommentGenerationView() {
               <div>
                 <span>Length</span>
                 <div className="length-segments">
-                  {["Short", "Medium", "Long"].map((item) => (
+                  {LENGTH_OPTIONS.map((item) => (
                     <button
                       className={length === item ? "selected" : ""}
                       type="button"
@@ -308,7 +334,11 @@ export function CommentGenerationView() {
           activity={activity}
           profile={profile}
           initialComment={editing.comment}
+          threadId={editing.threadId}
           styleLabel={editing.label}
+          tone={editing.tone}
+          length={editing.length}
+          onUpdated={handleEditorUpdated}
           onClose={() => setEditing(null)}
           onSave={(comment) => void saveComment(comment, false)}
           onMarkCommented={(comment) => void saveComment(comment, true)}

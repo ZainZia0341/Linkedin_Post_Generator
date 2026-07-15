@@ -61,10 +61,13 @@ def invoke_structured(
     schema: type[SchemaT],
     system_prompt: str,
     user_prompt: str,
-    fallback_factory: Callable[[], SchemaT],
+    fallback_factory: Callable[[], SchemaT] | None,
 ) -> SchemaT:
     if config is None or not config.resolved_api_key():
-        print("LLM skipped: no API key available, using deterministic fallback.")
+        message = "LLM skipped: no API key available."
+        if fallback_factory is None:
+            raise RuntimeError(message)
+        print(f"{message} Using deterministic fallback.")
         return fallback_factory()
 
     try:
@@ -82,6 +85,8 @@ def invoke_structured(
             return result
         return schema.model_validate(result)
     except Exception as exc:
+        if fallback_factory is None:
+            raise RuntimeError(f"LLM call failed: {exc}") from exc
         print(f"LLM call failed, using deterministic fallback: {exc}")
         return fallback_factory()
 

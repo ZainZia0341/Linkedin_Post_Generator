@@ -659,9 +659,13 @@ a {
 
 .generate-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 430px) minmax(0, 1fr) minmax(220px, 260px);
   gap: 18px;
   align-items: start;
+}
+
+.generate-thread-panel .thread-list {
+  margin-top: 16px;
 }
 
 .generator-panel,
@@ -3165,29 +3169,23 @@ a {
   color: #ffffff;
 }
 
-.ai-assistant-box blockquote {
-  margin: 10px 0 0;
-  border-left: 3px solid var(--accent);
-  border-radius: 8px;
-  background: var(--surface);
-  color: #273247;
-  padding: 12px;
-  font-size: 12px;
-  line-height: 1.55;
+.comment-improve-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 12px;
 }
 
-.ai-assistant-box blockquote button {
-  display: block;
-  margin-top: 10px;
-  margin-left: auto;
-  border: 1px solid var(--accent);
+.comment-improve-row input {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
-  color: var(--accent);
-  cursor: pointer;
-  padding: 7px 10px;
+  color: var(--text);
+  outline: none;
+  padding: 0 10px;
   font-size: 12px;
-  font-weight: 850;
 }
 
 .comment-preset-row {
@@ -3506,7 +3504,8 @@ a {
   }
 
   .comment-variation-grid,
-  .comment-style-grid {
+  .comment-style-grid,
+  .comment-improve-row {
     grid-template-columns: 1fr;
   }
 }

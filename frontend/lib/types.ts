@@ -185,12 +185,18 @@ export type CommentResponse = {
   user_id: string;
   creator_id: string;
   post_id: string;
+  thread_id?: string;
   comment_topic: string;
+  style?: string;
+  tone?: string;
+  length?: string;
   comment: string;
   provider?: string;
   model?: string;
   generated_at?: string;
   commented?: boolean;
+  modification_count?: number;
+  conversation?: Array<Record<string, unknown>>;
 };
 
 export type CommentedActivityResponse = ActivityResponse & {

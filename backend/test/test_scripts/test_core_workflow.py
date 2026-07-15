@@ -16,7 +16,7 @@ from app.extract_resume_details import extract_resume_profile
 from app.graph_state import run_post_chat_edit, run_post_generation
 from app.langchain_deep_search import research_trending_topics
 from app.llms.llm import LLMConfig
-from app.llms.llm_structure_schema import GeneratedPost
+from app.llms.llm_structure_schema import GeneratedPost, PostReview
 from app.llms.llm_structure_schema import ResearchResults
 from app.nodes import post_nodes
 from app.post_formatting import format_linkedin_post, formatting_issues
@@ -184,7 +184,25 @@ def test_burner_mode_requires_manual_bootstrap(tmp_path, monkeypatch) -> None:
     assert "bootstrap_linkedin_session.py" in result[0]["message"]
 
 
-def test_generation_graph_offline() -> None:
+def test_generation_graph_offline(monkeypatch) -> None:
+    def fake_invoke_structured(*args, **kwargs):
+        if kwargs.get("schema") is GeneratedPost:
+            return GeneratedPost(
+                post=(
+                    "AI writing gets useful when people treat it like a reviewable workflow.\n\n"
+                    "Start with the real audience problem, add source-backed context, and keep a human review step."
+                ),
+                facts_used=[],
+                style_notes=[],
+            )
+        if kwargs.get("schema") is PostReview:
+            return PostReview(passed=True, feedback="Looks good.", issues=[], revised_prompt_hint="")
+        fallback_factory = kwargs.get("fallback_factory")
+        if fallback_factory:
+            return fallback_factory()
+        raise AssertionError("Unexpected structured LLM schema in offline graph test.")
+
+    monkeypatch.setattr(post_nodes, "invoke_structured", fake_invoke_structured)
     style = extract_writing_style(_read_text("sample_previous_post.txt"))
     profile = extract_resume_profile(_read_text("sample_resume.txt"))
     topic = _read_text("sample_topic.txt")

@@ -2,15 +2,20 @@
 
 import { Bot, CheckCircle2, Copy, ExternalLink, Save, Sparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DEFAULT_USER_ID, fetchThread, modifyComment } from "@/lib/api";
 import { initials, previewText } from "@/lib/format";
-import type { ActivityResponse, CreatorProfileDetailsResponse } from "@/lib/types";
+import type { ActivityResponse, CommentResponse, CreatorProfileDetailsResponse } from "@/lib/types";
 
 type CommentEditorDrawerProps = {
   activity: ActivityResponse;
   profile?: CreatorProfileDetailsResponse;
   initialComment: string;
+  threadId?: string;
   styleLabel?: string;
+  tone?: string;
+  length?: string;
   mode?: "assistant" | "saved";
+  onUpdated?: (response: CommentResponse) => void;
   onClose: () => void;
   onSave: (comment: string) => void;
   onMarkCommented?: (comment: string) => void;
@@ -20,25 +25,70 @@ export function CommentEditorDrawer({
   activity,
   profile,
   initialComment,
+  threadId = "",
   styleLabel = "Add Value",
+  tone = "Professional",
+  length = "Medium",
   mode = "assistant",
+  onUpdated,
   onClose,
   onSave,
   onMarkCommented,
 }: CommentEditorDrawerProps) {
   const [comment, setComment] = useState(initialComment);
+  const [instruction, setInstruction] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
   const name = profile?.name || activity.author_name || activity.creator_id;
 
   useEffect(() => {
     setComment(initialComment);
   }, [initialComment]);
 
-  function applySuggestion(text: string) {
-    setComment(text);
-  }
+  useEffect(() => {
+    let cancelled = false;
+    async function loadThread() {
+      if (!threadId) return;
+      try {
+        const thread = await fetchThread(DEFAULT_USER_ID, threadId);
+        if (!cancelled && thread.current_post) {
+          setComment(thread.current_post);
+        }
+      } catch {
+        // Keep the generated comment already passed into the drawer.
+      }
+    }
+    void loadThread();
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
 
   async function copyComment() {
     await navigator.clipboard.writeText(comment);
+  }
+
+  async function improveComment(message: string) {
+    if (!threadId || !message.trim()) return;
+    setBusy(message);
+    setError("");
+    try {
+      const response = await modifyComment({
+        user_id: DEFAULT_USER_ID,
+        thread_id: threadId,
+        modification_message: message.trim(),
+        style: styleLabel,
+        tone,
+        length,
+      });
+      setComment(response.comment);
+      setInstruction("");
+      onUpdated?.(response);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "Could not improve this comment.");
+    } finally {
+      setBusy("");
+    }
   }
 
   return (
@@ -119,17 +169,26 @@ export function CommentEditorDrawer({
           ) : (
             <section className="ai-assistant-box">
               <h3><Sparkles size={16} /> AI Assistant</h3>
-              <div className="assistant-message user">Make this sound more conversational.</div>
+              {error ? <div className="error-banner">{error}</div> : null}
               <div className="assistant-message">
                 <Bot size={15} />
-                <span>Here is a more natural version that keeps the same point.</span>
+                <span>{threadId ? "Ask AI to refine this comment. Changes are saved to the comment thread." : "Generate this comment again to create an editable thread."}</span>
               </div>
-              <blockquote>
-                "{makeConversational(comment)}"
-                <button type="button" onClick={() => applySuggestion(makeConversational(comment))}>
-                  Apply Suggestion
+              <div className="comment-improve-row">
+                <input
+                  value={instruction}
+                  onChange={(event) => setInstruction(event.target.value)}
+                  placeholder="Tell AI how you want to improve this comment..."
+                />
+                <button
+                  className="primary-button compact"
+                  type="button"
+                  onClick={() => void improveComment(instruction)}
+                  disabled={!threadId || !instruction.trim() || Boolean(busy)}
+                >
+                  {busy === instruction ? "Improving..." : "Improve"}
                 </button>
-              </blockquote>
+              </div>
               <div className="comment-preset-row">
                 {[
                   "Make Shorter",
@@ -139,8 +198,8 @@ export function CommentEditorDrawer({
                   "More Engaging",
                   "Ask a Question",
                 ].map((label) => (
-                  <button type="button" key={label} onClick={() => setComment(`${comment} ${presetTail(label)}`.trim())}>
-                    {label}
+                  <button type="button" key={label} onClick={() => void improveComment(label)} disabled={!threadId || Boolean(busy)}>
+                    {busy === label ? "Working..." : label}
                   </button>
                 ))}
               </div>
@@ -168,22 +227,4 @@ export function CommentEditorDrawer({
       </aside>
     </div>
   );
-}
-
-function makeConversational(comment: string) {
-  const cleaned = comment.trim();
-  if (!cleaned) return "I like this framing. The real unlock is making the idea easier to act on, not just easier to agree with.";
-  return cleaned
-    .replace(/^One thing I'?d add is that/i, "I would add that")
-    .replace(/\btherefore\b/gi, "so")
-    .replace(/\butilize\b/gi, "use");
-}
-
-function presetTail(label: string) {
-  if (label === "Ask a Question") return "What would you watch for first when applying this?";
-  if (label === "More Engaging") return "That is the part most teams underestimate.";
-  if (label === "More Human") return "I have seen this become very real once ownership gets unclear.";
-  if (label === "More Professional") return "This is especially important when execution depends on multiple teams.";
-  if (label === "Make Longer") return "The practical test is whether someone can act on it without needing extra context.";
-  return "";
 }

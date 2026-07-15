@@ -76,68 +76,8 @@ def web_research_node(state: GraphState) -> dict[str, object]:
     }
 
 
-def _fallback_generated_post(state: GraphState) -> GeneratedPost:
-    topic = state.get("topic", "this topic").strip() or "this topic"
-    style = state.get("writing_style") or {}
-    resume = state.get("resume_profile") or {}
-    generation_style = state.get("generation_style", "Create a post about a topic")
-    tone = style.get("tone", "clear and practical") if isinstance(style, dict) else "clear and practical"
-    name = resume.get("full_name", "") if isinstance(resume, dict) else ""
-    opener = f"I have been thinking about {topic}."
-    if name:
-        opener = f"As {name}, I have been thinking about {topic}."
-
-    if "mistakes" in generation_style.lower():
-        post = (
-            f"{opener}\n\n"
-            "The mistakes I see most often:\n"
-            "1. Starting with the tool before defining the problem.\n"
-            "2. Sharing vague claims without a concrete example.\n"
-            "3. Skipping the review step before people see the work.\n\n"
-            f"Fix those three and {topic} becomes much easier to trust.\n\n"
-            "Which one shows up most often?"
-        )
-    elif "do's and don'ts" in generation_style.lower():
-        post = (
-            f"{opener}\n\n"
-            "Don't:\n"
-            "- Chase the trend without understanding the use case.\n"
-            "- Turn the post into a list of buzzwords.\n\n"
-            "Do:\n"
-            "- Explain the practical problem.\n"
-            "- Give one example a reader can remember.\n\n"
-            f"That is how {topic} becomes useful instead of just noisy.\n\n"
-            "What would you add?"
-        )
-    else:
-        post = (
-            f"{opener}\n\n"
-            "The useful part is not just the idea itself. It is how we turn it into a repeatable habit.\n\n"
-            "Three things stand out:\n"
-            "1. Start with the real problem, not the tool.\n"
-            "2. Keep the workflow simple enough to use when work gets busy.\n"
-            "3. Review the output before sharing it with people who trust you.\n\n"
-            f"That is the difference between experimenting with {topic} and actually getting value from it.\n\n"
-            "What would you add?"
-        )
-    return GeneratedPost(
-        post=post,
-        facts_used=[
-            result.get("title", "")
-            for result in state.get("search_results", [])
-            if result.get("title")
-        ]
-        or ["Deterministic fallback generated without external claims."],
-        style_notes=[f"Used {tone} tone."],
-        provider=state.get("provider", ""),
-        model=state.get("model", ""),
-    )
-
-
 def generate_post_node(state: GraphState) -> dict[str, object]:
     attempts = int(state.get("attempts", 0)) + 1
-    updated_state = dict(state)
-    updated_state["attempts"] = attempts
     print(f"Generating LinkedIn post, attempt {attempts}.")
     generated = invoke_structured(
         config=_state_config(state),
@@ -151,7 +91,7 @@ def generate_post_node(state: GraphState) -> dict[str, object]:
             generation_instructions=state.get("generation_instructions", ""),
             review_feedback=state.get("review_feedback", ""),
         ),
-        fallback_factory=lambda: _fallback_generated_post(updated_state),
+        fallback_factory=None,
     )
     formatted_post = format_linkedin_post(generated.post)
     messages = list(state.get("messages", []))
@@ -168,37 +108,8 @@ def generate_post_node(state: GraphState) -> dict[str, object]:
     }
 
 
-def _fallback_modified_post(state: GraphState) -> GeneratedPost:
-    post = state.get("current_post") or state.get("final_post") or ""
-    request = _latest_user_message(state).lower()
-    revised = post
-    if "shorter" in request or "concise" in request:
-        paragraphs = [paragraph for paragraph in post.split("\n\n") if paragraph.strip()]
-        revised = "\n\n".join(paragraphs[:3])
-    elif "longer" in request or "detail" in request:
-        revised = post + "\n\nA practical next step is to test this with one real workflow before scaling it."
-    elif "hashtag" in request and "#" not in post:
-        revised = post + "\n\n#LinkedIn #CareerGrowth #AI"
-    elif "hook" in request:
-        revised = "A simple shift changed how I see this:\n\n" + post
-    elif "cta" in request or "call to action" in request:
-        revised = post.rstrip() + "\n\nWhat would you try first?"
-    else:
-        revised = post.rstrip() + "\n\nUpdated based on your requested direction."
-
-    return GeneratedPost(
-        post=revised,
-        facts_used=["Modified from the current post only."],
-        style_notes=["Applied deterministic edit fallback."],
-        provider=state.get("provider", ""),
-        model=state.get("model", ""),
-    )
-
-
 def modify_post_node(state: GraphState) -> dict[str, object]:
     attempts = int(state.get("attempts", 0)) + 1
-    updated_state = dict(state)
-    updated_state["attempts"] = attempts
     print(f"Modifying LinkedIn post, attempt {attempts}.")
     generated = invoke_structured(
         config=_state_config(state),
@@ -212,7 +123,7 @@ def modify_post_node(state: GraphState) -> dict[str, object]:
             resume_profile=_json(state.get("resume_profile")),
             review_feedback=state.get("review_feedback", ""),
         ),
-        fallback_factory=lambda: _fallback_modified_post(updated_state),
+        fallback_factory=None,
     )
     formatted_post = format_linkedin_post(generated.post)
     messages = list(state.get("messages", []))

@@ -43,14 +43,9 @@ class GeneratePostRequest(BaseModel):
         description="The topic or instruction to create the LinkedIn post about.",
         examples=["Create a post on Claude Fable 5 return"],
     )
-    generation_style: str = Field(
-        default="Create a post about a topic",
-        description=(
-            "Post creation template to use. Examples: Create posts from scratch, "
-            "Create a controversial post about a topic, Create a top mistakes post about a topic."
-        ),
-        examples=["Create a post about a topic"],
-    )
+    post_length: str = Field(default="Medium", examples=["Short", "Medium", "Long"])
+    tone: str = Field(default="Professional", examples=["Professional", "Casual"])
+    writing_style: str = Field(default="Clear Builder", examples=["Clear Builder"])
     topic_source: str = Field(
         default="manual",
         description="Tracking metadata for where the idea came from, such as manual, brainstorm, or creator_activity.",
@@ -261,22 +256,40 @@ class GenerateCommentRequest(BaseModel):
     creator_id: str = Field(examples=["shubhamsaboo"])
     post_id: str = Field(examples=["urn:li:activity:7478273041442033664"])
     comment_topic: str = Field(
-        default="Add Value",
-        description="Comment angle to generate.",
+        default="",
+        description="Legacy comment angle. New clients should use style instead.",
         examples=["Add Value"],
     )
+    style: str = Field(default="Add Value", description="Comment style or angle.", examples=["Add Value"])
+    tone: str = Field(default="Professional", examples=["Professional", "Casual"])
+    length: str = Field(default="Medium", examples=["Short", "Medium", "Long"])
+
+
+class ModifyCommentRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    thread_id: str
+    modification_message: str = Field(examples=["Make this sound more conversational."])
+    style: str | None = None
+    tone: str | None = None
+    length: str | None = None
 
 
 class CommentResponse(BaseModel):
     user_id: str
     creator_id: str
     post_id: str
+    thread_id: str = ""
     comment_topic: str
+    style: str = "Add Value"
+    tone: str = "Professional"
+    length: str = "Medium"
     comment: str
     provider: str = ""
     model: str = ""
     generated_at: str = ""
     commented: bool = False
+    modification_count: int = 0
+    conversation: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MarkCommentedRequest(BaseModel):

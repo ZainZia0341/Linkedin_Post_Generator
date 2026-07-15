@@ -21,6 +21,7 @@ from app.api.schemas import (
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
+    ModifyCommentRequest,
     MarkCommentedRequest,
     ModifyPostRequest,
     RecentActivitiesResponse,
@@ -55,6 +56,7 @@ from app.api.services import (
     list_creator_profile_details,
     list_recent_activities_from_db,
     mark_activity_commented,
+    modify_comment,
     modify_post,
     preview_creators_from_file,
     scrape_creator_profile_details,
@@ -212,6 +214,8 @@ def generate_post_endpoint(
         return generate_post(repo, payload)
     except KeyError as exc:
         raise _not_found(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/posts/modify", response_model=ThreadResponse)
@@ -223,6 +227,8 @@ def modify_post_endpoint(
         return modify_post(repo, payload)
     except KeyError as exc:
         raise _not_found(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/posts/from-creator-activity", response_model=ThreadResponse)
@@ -234,6 +240,8 @@ def generate_from_creator_activity_endpoint(
         return generate_from_activity(repo, payload)
     except KeyError as exc:
         raise _not_found(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/comments/generate", response_model=CommentResponse)
@@ -243,6 +251,17 @@ def generate_comment_endpoint(
 ) -> CommentResponse:
     try:
         return generate_comment(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/comments/modify", response_model=CommentResponse)
+def modify_comment_endpoint(
+    payload: ModifyCommentRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CommentResponse:
+    try:
+        return modify_comment(repo, payload)
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -447,7 +466,7 @@ def list_creator_activities(
 def list_user_activities(
     user_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
-    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=100),
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=1000),
 ) -> list[ActivityResponse]:
     return list_all_activities(repo, user_id, limit)
 

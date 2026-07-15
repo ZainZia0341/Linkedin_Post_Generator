@@ -9,6 +9,7 @@ from app.api.schemas import (
     GenerateCommentRequest,
     GeneratePostRequest,
     MarkCommentedRequest,
+    ModifyCommentRequest,
     ModifyPostRequest,
     RecentScrapeCreatorsRequest,
     ScrapeCreatorsRequest,
@@ -21,11 +22,14 @@ from app.api.services import (
     import_creators_from_file,
     list_commented_activities,
     mark_activity_commented,
+    modify_comment,
     modify_post,
     scrape_creators,
     scrape_creators_recent_24h,
 )
 import app.api.services as services
+from app.llms.llm_structure_schema import GeneratedPost
+from app.nodes import post_nodes
 from app.writing_style_extract import get_builtin_writing_style
 
 
@@ -81,7 +85,23 @@ class MemoryRepo:
         return activities[: limit or 10]
 
 
-def test_api_service_generate_and_modify_offline() -> None:
+def test_api_service_generate_and_modify_offline(monkeypatch) -> None:
+    def fake_invoke_structured(*args, **kwargs):
+        if kwargs.get("schema") is GeneratedPost:
+            return GeneratedPost(
+                post=(
+                    "FastAPI and DynamoDB Local make AI content tools easier to test.\n\n"
+                    "You can validate the API shape, persistence flow, and editing loop before touching production."
+                ),
+                facts_used=[],
+                style_notes=[],
+            )
+        fallback_factory = kwargs.get("fallback_factory")
+        if fallback_factory:
+            return fallback_factory()
+        raise AssertionError("Unexpected structured LLM schema in offline service test.")
+
+    monkeypatch.setattr(post_nodes, "invoke_structured", fake_invoke_structured)
     repo = MemoryRepo()
     create_user(
         repo,
@@ -99,7 +119,9 @@ def test_api_service_generate_and_modify_offline() -> None:
         GeneratePostRequest(
             user_id="test-user-1",
             idea="FastAPI and DynamoDB local for AI content tools",
-            generation_style="Create a post about a topic",
+            post_length="Medium",
+            tone="Professional",
+            writing_style="Clear Builder",
         ),
     )
     assert generated.thread_id
@@ -195,6 +217,7 @@ def test_generate_post_request_does_not_expose_llm_credentials() -> None:
     assert "provider" not in properties
     assert "model" not in properties
     assert "api_key" not in properties
+    assert "generation_style" not in properties
 
 
 def test_comment_generation_and_tracking_offline() -> None:
@@ -224,12 +247,32 @@ def test_comment_generation_and_tracking_offline() -> None:
             user_id="test-user-1",
             creator_id="shubhamsaboo",
             post_id="urn:li:activity:1",
-            comment_topic="Expert Insight",
+            style="Expert Insight",
+            tone="Casual",
+            length="Short",
         ),
     )
     assert draft.comment
     assert draft.comment_topic == "Expert Insight"
+    assert draft.style == "Expert Insight"
+    assert draft.tone == "Casual"
+    assert draft.length == "Short"
+    assert draft.thread_id
     assert draft.commented is False
+
+    revised = modify_comment(
+        repo,
+        ModifyCommentRequest(
+            user_id="test-user-1",
+            thread_id=draft.thread_id,
+            modification_message="Make it more professional.",
+            tone="Professional",
+        ),
+    )
+    assert revised.comment
+    assert revised.thread_id == draft.thread_id
+    assert revised.modification_count == 1
+    assert revised.tone == "Professional"
 
     marked = mark_activity_commented(
         repo,
@@ -238,7 +281,7 @@ def test_comment_generation_and_tracking_offline() -> None:
             creator_id="shubhamsaboo",
             post_id="urn:li:activity:1",
             commented=True,
-            comment_text=draft.comment,
+            comment_text=revised.comment,
         ),
     )
     assert marked.commented is True

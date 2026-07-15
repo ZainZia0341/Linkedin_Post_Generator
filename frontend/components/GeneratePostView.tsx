@@ -1,11 +1,13 @@
 "use client";
 
 import { ArrowRight, Loader2, PenLine, Send, Sparkles } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import {
   DEFAULT_USER_ID,
-  fetchPostTypes,
+  fetchThread,
   fetchThreads,
   fetchUserData,
   generatePost,
@@ -17,15 +19,15 @@ import {
   TONE_OPTIONS,
   WRITING_STYLE_OPTIONS,
 } from "@/lib/constants";
-import { displayName, previewText, sortThreads } from "@/lib/format";
+import { compactDate, displayName, previewText, sortThreads, threadTitle } from "@/lib/format";
 import type { ThreadResponse, ThreadSummary, UserDataResponse } from "@/lib/types";
 
 export function GeneratePostView() {
+  const searchParams = useSearchParams();
+  const selectedThreadId = searchParams.get("thread_id") || "";
   const [userData, setUserData] = useState<UserDataResponse | null>(null);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
-  const [postTypes, setPostTypes] = useState<string[]>([]);
   const [topic, setTopic] = useState("");
-  const [postType, setPostType] = useState("");
   const [tone, setTone] = useState(TONE_OPTIONS[0]);
   const [length, setLength] = useState(LENGTH_OPTIONS[1]);
   const [writingStyle, setWritingStyle] = useState(WRITING_STYLE_OPTIONS[0]);
@@ -39,18 +41,30 @@ export function GeneratePostView() {
     let cancelled = false;
 
     async function load() {
-      const [userResult, threadResult, styleResult] = await Promise.allSettled([
+      const [userResult, threadResult, selectedThreadResult] = await Promise.allSettled([
         fetchUserData(DEFAULT_USER_ID),
         fetchThreads(DEFAULT_USER_ID, 8),
-        fetchPostTypes(),
+        selectedThreadId ? fetchThread(DEFAULT_USER_ID, selectedThreadId) : Promise.resolve(null),
       ]);
 
       if (cancelled) return;
       if (userResult.status === "fulfilled") setUserData(userResult.value);
       if (threadResult.status === "fulfilled") setThreads(threadResult.value);
-      if (styleResult.status === "fulfilled" && styleResult.value.length) {
-        setPostTypes(styleResult.value);
-        if (!styleResult.value.includes(postType)) setPostType(styleResult.value[0]);
+      if (selectedThreadResult.status === "fulfilled" && selectedThreadResult.value) {
+        const openedThread = selectedThreadResult.value;
+        setThread(openedThread);
+        setTopic(openedThread.topic || "");
+        setThreads((current) => [
+          openedThread,
+          ...current.filter((item) => item.thread_id !== openedThread.thread_id),
+        ]);
+      }
+      if (selectedThreadResult.status === "rejected") {
+        setError(
+          selectedThreadResult.reason instanceof Error
+            ? selectedThreadResult.reason.message
+            : "Could not load selected thread.",
+        );
       }
     }
 
@@ -58,9 +72,10 @@ export function GeneratePostView() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selectedThreadId]);
 
   const sortedThreads = useMemo(() => sortThreads(threads), [threads]);
+  const recentPostThreads = sortedThreads.filter((item) => item.topic_source !== "comment_generation");
   const userName = displayName(userData?.user) || DEFAULT_USER_ID;
 
   async function handleGenerate() {
@@ -71,19 +86,13 @@ export function GeneratePostView() {
     setError("");
     setBusy(true);
 
-    const idea = [
-      topic.trim(),
-      "",
-      `Tone: ${tone}.`,
-      `Length: ${length}.`,
-      `Writing style: ${writingStyle}.`,
-    ].join("\n");
-
     try {
       const result = await generatePost({
         user_id: DEFAULT_USER_ID,
-        idea,
-        generation_style: postType,
+        idea: topic.trim(),
+        post_length: length,
+        tone,
+        writing_style: writingStyle,
         topic_source: "manual",
       });
       setThread(result);
@@ -116,7 +125,7 @@ export function GeneratePostView() {
   }
 
   return (
-      <AppShell
+    <AppShell
       active="generate"
       title="Generate"
       subtitle="Create and refine LinkedIn posts."
@@ -144,17 +153,6 @@ export function GeneratePostView() {
           </label>
 
           <div className="form-grid">
-            <label className="field">
-              <span>Post type</span>
-              <select value={postType} onChange={(event) => setPostType(event.target.value)} disabled={!postTypes.length}>
-                {postTypes.length ? (
-                  postTypes.map((option) => <option key={option}>{option}</option>)
-                ) : (
-                  <option>Load post types from API</option>
-                )}
-              </select>
-            </label>
-
             <label className="field">
               <span>Writing style</span>
               <select value={writingStyle} onChange={(event) => setWritingStyle(event.target.value)}>
@@ -192,7 +190,7 @@ export function GeneratePostView() {
 
           {error ? <div className="error-banner">{error}</div> : null}
 
-          <button className="primary-button full" type="button" onClick={handleGenerate} disabled={busy || !postType}>
+          <button className="primary-button full" type="button" onClick={handleGenerate} disabled={busy}>
             {busy ? <Loader2 className="spin" size={17} /> : <Send size={17} />}
             Generate Post
           </button>
@@ -252,6 +250,28 @@ export function GeneratePostView() {
             </div>
           )}
         </section>
+
+        <aside className="recent-panel generate-thread-panel">
+          <h3>Recent Threads</h3>
+          {recentPostThreads.length ? (
+            <div className="thread-list">
+              {recentPostThreads.slice(0, 6).map((item) => (
+                <Link
+                  className="thread-link"
+                  href={`/generate?thread_id=${encodeURIComponent(item.thread_id)}`}
+                  key={item.thread_id}
+                >
+                  <span>
+                    <strong>{threadTitle(item)}</strong>
+                    <small>{compactDate(item.updated_at) || "Recent"}</small>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-mini">Generated posts will show here.</div>
+          )}
+        </aside>
       </div>
     </AppShell>
   );

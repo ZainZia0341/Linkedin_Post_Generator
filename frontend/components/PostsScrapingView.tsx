@@ -4,12 +4,14 @@ import {
   CheckCircle2,
   Copy,
   ExternalLink,
+  MessageSquareText,
   Search,
   Trash2,
   X,
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { RunScrapingDialog } from "@/components/RunScrapingDialog";
 import {
@@ -25,6 +27,7 @@ import type { ActivityResponse, CreatorProfileDetailsResponse, CreatorResponse, 
 const POSTS_PAGE_SIZE = 9;
 
 export function PostsScrapingView() {
+  const router = useRouter();
   const [userData, setUserData] = useState<UserDataResponse | null>(null);
   const [activities, setActivities] = useState<ActivityResponse[]>([]);
   const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
@@ -115,6 +118,14 @@ export function PostsScrapingView() {
     lastScrape: lastScrapeAt ? compactDate(lastScrapeAt) : "No scrape",
   };
 
+  function openCommentGeneration(activity: ActivityResponse) {
+    const params = new URLSearchParams({
+      creator_id: activity.creator_id,
+      post_id: activity.post_id,
+    });
+    router.push(`/comments/generate?${params.toString()}`);
+  }
+
   return (
     <AppShell
       active="posts"
@@ -181,6 +192,7 @@ export function PostsScrapingView() {
                   creator={creatorById.get(activity.creator_id)}
                   profile={profileMap.get(activity.creator_id)}
                   onOpenDetails={setSelectedPost}
+                  onGenerateComment={openCommentGeneration}
                   key={`${activity.creator_id}-${activity.post_id}`}
                 />
               ))
@@ -263,12 +275,14 @@ function ScrapedPostCard({
   creator,
   profile,
   onOpenDetails,
+  onGenerateComment,
   muted = false,
 }: {
   activity: ActivityResponse;
   creator?: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
   onOpenDetails: (activity: ActivityResponse) => void;
+  onGenerateComment: (activity: ActivityResponse) => void;
   muted?: boolean;
 }) {
   const name = profile?.name || activity.author_name || creator?.display_name || activityTitle(activity);
@@ -308,6 +322,10 @@ function ScrapedPostCard({
         <span>Fetched {compactDate(activity.fetched_at)}</span>
       </div>
       <footer className="post-card-actions">
+        <button className="secondary-button compact" type="button" onClick={() => onGenerateComment(activity)}>
+          <MessageSquareText size={15} />
+          Generate Comment
+        </button>
         <button className="icon-button tiny copy-post-button" type="button" onClick={() => void copyPostText()} aria-label="Copy post text">
           <Copy size={15} />
         </button>

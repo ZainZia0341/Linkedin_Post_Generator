@@ -35,7 +35,7 @@ Resume profile:
 Research notes:
 {research_notes}
 
-Post creation style:
+Generation controls:
 {generation_instructions}
 
 Review feedback to address:
@@ -43,7 +43,7 @@ Review feedback to address:
 
 Rules:
 - Match the writing style closely.
-- Follow the selected post creation style.
+- Follow the requested length, tone, and writing style controls.
 - Treat research notes as the factual source of truth for current or niche terms.
 - Explain specialized terms in their current context when the topic depends on them.
 - If research notes do not support a factual claim, do not include that claim.
@@ -56,6 +56,8 @@ Rules:
   - Use bullets only when they make the post easier to scan.
   - Put relevant hashtags on the final line only when they genuinely fit the post.
   - Use no more than five hashtags.
+  - Avoid generic hashtags such as #LinkedIn, #CareerGrowth, #BuildingInPublic, and #PersonalBranding unless the topic is specifically about them.
+  - Prefer 0 to 3 topic-specific hashtags over broad category hashtags.
 - Use resume data only when relevant.
 - Do not invent names, employers, metrics, sources, or personal claims.
 - Keep the post readable on LinkedIn.
@@ -123,33 +125,85 @@ Formatting rules:
 
 If it passes, set passed true. If not, explain exactly what to fix."""
 
-COMMENT_GENERATION_SYSTEM_PROMPT = """You write short LinkedIn comments on saved creator posts.
+COMMENT_GENERATION_SYSTEM_PROMPT = """You write LinkedIn comments on saved creator posts.
 Return only structured data that matches the schema. The comment must be ready to paste into LinkedIn."""
 
-COMMENT_GENERATION_USER_PROMPT = """Write a short LinkedIn comment.
+COMMENT_GENERATION_USER_PROMPT = """Write a LinkedIn comment.
 
 Creator post:
 {creator_post}
 
-Comment topic:
-{comment_topic}
+Comment style:
+{comment_style}
+
+Tone:
+{tone}
+
+Length:
+{length}
 
 User profile:
 {resume_profile}
 
 Rules:
-- Write 1 to 2 sentences.
 - Do not use hashtags.
 - Do not use markdown.
 - Do not invent facts, metrics, personal experience, or claims.
-- Match the comment topic:
+- Match the requested style:
   - Add Value: add a practical useful angle.
   - Congratulate: celebrate the author naturally.
   - Agree: agree and add a specific reason.
   - Disagree: respectfully disagree and explain why.
   - Challenge: ask a sharp but professional question.
   - Expert Insight: add a concise expert observation.
-- Keep it human, specific, and professional."""
+- Match the requested tone:
+  - Professional: polished, clear, and credible.
+  - Casual: relaxed and natural while still respectful.
+  - Friendly: warm and approachable.
+  - Direct: concise and pointed.
+  - Thoughtful: reflective and nuanced.
+- Match the requested length:
+  - Short: one concise sentence.
+  - Medium: one to two concise sentences.
+  - Long: two to three concise sentences, still compact.
+- Keep it human and specific."""
+
+COMMENT_MODIFICATION_SYSTEM_PROMPT = """You refine an existing LinkedIn comment based on the user's requested edit.
+Return only structured data that matches the schema. The comment must be ready to paste into LinkedIn."""
+
+COMMENT_MODIFICATION_USER_PROMPT = """Modify this LinkedIn comment.
+
+Creator post:
+{creator_post}
+
+Current comment:
+{current_comment}
+
+User request:
+{user_request}
+
+Conversation history:
+{conversation_history}
+
+Comment style:
+{comment_style}
+
+Tone:
+{tone}
+
+Length:
+{length}
+
+User profile:
+{resume_profile}
+
+Rules:
+- Return the full revised comment only in the structured field.
+- Make the requested change without adding unrelated ideas.
+- Do not use hashtags.
+- Do not use markdown.
+- Do not invent facts, metrics, personal experience, or claims.
+- Keep it ready to paste into LinkedIn."""
 
 GUARDRAIL_SYSTEM_PROMPT = """You classify whether a user message is a request to edit the current LinkedIn post.
 Return route='modify_post' only for post editing, rewriting, formatting, tone, length, hook, CTA, hashtag, or content changes.

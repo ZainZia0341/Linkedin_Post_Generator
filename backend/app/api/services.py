@@ -27,6 +27,7 @@ from app.api.schemas import (
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
+    ModifyCommentRequest,
     MarkCommentedRequest,
     ModifyPostRequest,
     RecentActivitiesResponse,
@@ -56,9 +57,13 @@ from app.langchain_deep_search import research_trending_topics
 from app.linkedin_playwright_scraper import fetch_profile_details, fetch_recent_profile_posts
 from app.llms.llm import LLMConfig, invoke_structured
 from app.llms.llm_structure_schema import GeneratedComment
-from app.llms.prompts import COMMENT_GENERATION_SYSTEM_PROMPT, COMMENT_GENERATION_USER_PROMPT
+from app.llms.prompts import (
+    COMMENT_GENERATION_SYSTEM_PROMPT,
+    COMMENT_GENERATION_USER_PROMPT,
+    COMMENT_MODIFICATION_SYSTEM_PROMPT,
+    COMMENT_MODIFICATION_USER_PROMPT,
+)
 from app.post_generation_styles import (
-    DEFAULT_GENERATION_STYLE,
     generation_style_labels,
     generation_style_prompt,
     normalize_generation_style,
@@ -74,6 +79,53 @@ RECENTLY_ADDED_WINDOW_DAYS = 7
 SCRAPING_STALE_AFTER_HOURS = 24
 RECENT_ACTIVITY_RETENTION_DAYS = 3
 DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS = 3
+GENERIC_HASHTAGS = {
+    "#linkedin",
+    "#careergrowth",
+    "#buildinginpublic",
+    "#personalbranding",
+    "#professionaldevelopment",
+}
+HASHTAG_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "and",
+    "are",
+    "before",
+    "between",
+    "but",
+    "can",
+    "for",
+    "from",
+    "have",
+    "how",
+    "into",
+    "just",
+    "more",
+    "not",
+    "our",
+    "post",
+    "that",
+    "the",
+    "their",
+    "this",
+    "through",
+    "with",
+    "your",
+}
+HASHTAG_ACRONYMS = {
+    "ai": "AI",
+    "api": "API",
+    "aws": "AWS",
+    "crm": "CRM",
+    "llm": "LLM",
+    "saas": "SaaS",
+    "seo": "SEO",
+    "ui": "UI",
+    "ux": "UX",
+}
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -248,35 +300,143 @@ def _resolve_style(user: dict[str, Any], generation_style: str | dict[str, Any] 
     return user.get("writing_style") or _default_style()
 
 
+def _normalize_control(value: str | None, allowed: list[str], default: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not cleaned:
+        return default
+    for item in allowed:
+        if cleaned.lower() == item.lower():
+            return item
+    return cleaned[:80]
+
+
+def _post_generation_instructions(post_length: str, tone: str, writing_style: str) -> str:
+    return (
+        f"Post length: {post_length}.\n"
+        f"Tone: {tone}.\n"
+        f"Writing style: {writing_style}.\n"
+        "Do not use a CTA template. Do not follow a prebuilt post template. "
+        "Create the post directly from the topic and controls. "
+        "Avoid generic hashtags such as #LinkedIn, #CareerGrowth, and #BuildingInPublic. "
+        "Use only topic-specific hashtags when they genuinely fit."
+    )
+
+
+def _hashtag_part(token: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", token)
+    if not cleaned:
+        return ""
+    lower = cleaned.lower()
+    if lower in HASHTAG_ACRONYMS:
+        return HASHTAG_ACRONYMS[lower]
+    if cleaned.isupper() and len(cleaned) <= 6:
+        return cleaned
+    return cleaned[:1].upper() + cleaned[1:].lower()
+
+
+def _topic_keyword_entries(topic: str) -> list[tuple[str, int]]:
+    keywords: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for index, token in enumerate(re.findall(r"[A-Za-z][A-Za-z0-9+.-]*", topic or "")):
+        cleaned = re.sub(r"[^A-Za-z0-9]", "", token)
+        lower = cleaned.lower()
+        if not cleaned or lower in HASHTAG_STOPWORDS:
+            continue
+        if len(cleaned) < 3 and lower not in HASHTAG_ACRONYMS:
+            continue
+        if lower not in seen:
+            keywords.append((cleaned, index))
+            seen.add(lower)
+    return keywords
+
+
+def _topic_hashtags(topic: str, limit: int = 3) -> list[str]:
+    keyword_entries = _topic_keyword_entries(topic)
+    keywords = [keyword for keyword, _ in keyword_entries]
+    tags: list[str] = []
+
+    def add_tag(parts: list[str]) -> None:
+        tag = "#" + "".join(_hashtag_part(part) for part in parts if _hashtag_part(part))
+        if len(tag) <= 1 or tag.lower() in GENERIC_HASHTAGS:
+            return
+        if tag.lower() not in {item.lower() for item in tags}:
+            tags.append(tag)
+
+    for index in range(max(len(keyword_entries) - 1, 0)):
+        left, left_position = keyword_entries[index]
+        right, right_position = keyword_entries[index + 1]
+        if right_position != left_position + 1:
+            continue
+        add_tag([left, right])
+        if len(tags) >= limit:
+            return tags[:limit]
+
+    for keyword in keywords:
+        add_tag([keyword])
+        if len(tags) >= limit:
+            break
+
+    return tags[:limit]
+
+
+def _style_with_topic_hashtags(style: dict[str, Any], topic: str) -> dict[str, Any]:
+    updated = dict(style or {})
+    updated["hashtags"] = _topic_hashtags(topic)
+    updated["hashtag_guidance"] = (
+        "Use no generic growth hashtags. Prefer the provided topic-specific hashtags, "
+        "or omit hashtags if none fit naturally."
+    )
+    return updated
+
+
 def _ensure_hashtags(post: str, topic: str) -> str:
     formatted = format_linkedin_post(post)
-    if HASHTAG_RE.search(formatted):
+    if not formatted:
         return formatted
-    words = [word.strip("#.,:;!?").title() for word in topic.split() if len(word.strip("#.,:;!?")) > 3]
-    tags = ["#LinkedIn", "#CareerGrowth"]
-    for word in words:
-        tag = f"#{''.join(ch for ch in word if ch.isalnum())}"
-        if len(tag) > 1 and tag not in tags:
+
+    body = HASHTAG_RE.sub("", formatted)
+    existing_tags = [
+        tag
+        for tag in HASHTAG_RE.findall(formatted)
+        if tag.lower() not in GENERIC_HASHTAGS
+    ]
+    tags: list[str] = []
+    for tag in [*existing_tags, *_topic_hashtags(topic)]:
+        if tag.lower() not in {item.lower() for item in tags}:
             tags.append(tag)
-        if len(tags) == 4:
-            break
-    return format_linkedin_post(formatted + "\n\n" + " ".join(tags))
+
+    clean_body = format_linkedin_post(body)
+    if not tags:
+        return clean_body
+    return format_linkedin_post(f"{clean_body}\n\n{' '.join(tags[:5])}")
 
 
 def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> ThreadResponse:
     user = require_user(repo, request.user_id)
     config = llm_config()
-    style = _resolve_style(user, None)
-    generation_style = normalize_generation_style(request.generation_style or DEFAULT_GENERATION_STYLE)
+    post_length = _normalize_control(request.post_length, ["Short", "Medium", "Long"], "Medium")
+    tone = _normalize_control(
+        request.tone,
+        ["Professional", "Casual", "Conversational", "Founder voice", "Educational", "Bold", "Friendly", "Direct"],
+        "Professional",
+    )
+    writing_style_name = _normalize_control(
+        request.writing_style,
+        ["Clear Builder", "Story Driven", "Research Analyst"],
+        "Clear Builder",
+    )
+    style = _style_with_topic_hashtags(_resolve_style(user, writing_style_name), request.idea)
+    generation_style_label = "Custom controls"
     profile = user.get("profile") or {}
+    generation_instructions = _post_generation_instructions(post_length, tone, writing_style_name)
 
     graph_result = run_post_generation(
         {
             "workflow_mode": "generate",
             "topic": request.idea,
             "writing_style": style,
-            "generation_style": generation_style.label,
-            "generation_instructions": generation_style_prompt(generation_style.label),
+            "generation_style": generation_style_label,
+            "generation_instructions": generation_instructions,
             "resume_profile": profile,
             "messages": [{"role": "user", "content": request.idea}],
             "provider": config.provider,
@@ -293,13 +453,17 @@ def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> Threa
         "thread_id": str(uuid4()),
         "topic": request.idea,
         "topic_source": request.topic_source,
-        "generation_style": generation_style.label,
+        "generation_style": generation_style_label,
         "original_post": post,
         "current_post": post,
         "conversation": graph_result.get("messages", []),
         "provider": config.provider,
         "model": config.model,
-        "source": {},
+        "source": {
+            "post_length": post_length,
+            "tone": tone,
+            "writing_style": writing_style_name,
+        },
         "writing_style_snapshot": style,
         "profile_snapshot": profile,
         "created_at": timestamp,
@@ -1136,8 +1300,8 @@ def list_recent_activities_from_db(
     )
 
 
-def _normalize_comment_topic(comment_topic: str | None) -> str:
-    cleaned = (comment_topic or "").strip()
+def _normalize_comment_style(style: str | None, legacy_topic: str | None = None) -> str:
+    cleaned = (style or legacy_topic or "").strip()
     if not cleaned:
         return COMMENT_TOPICS[0]
     for topic in COMMENT_TOPICS:
@@ -1146,34 +1310,50 @@ def _normalize_comment_topic(comment_topic: str | None) -> str:
     return cleaned
 
 
-def _format_comment(comment: str) -> str:
+def _normalize_comment_tone(tone: str | None) -> str:
+    return _normalize_control(
+        tone,
+        ["Professional", "Casual", "Friendly", "Direct", "Thoughtful", "Founder voice", "Conversational"],
+        "Professional",
+    )
+
+
+def _normalize_comment_length(length: str | None) -> str:
+    return _normalize_control(length, ["Short", "Medium", "Long"], "Medium")
+
+
+def _format_comment(comment: str, length: str = "Medium") -> str:
     cleaned = re.sub(r"\s+", " ", comment or "").strip()
     cleaned = cleaned.replace("#", "").strip()
     if not cleaned:
         return "This is a useful angle. The practical takeaway is worth testing in a real workflow."
     sentences = re.split(r"(?<=[.!?])\s+", cleaned)
-    compact = " ".join(sentence for sentence in sentences[:2] if sentence).strip()
+    sentence_limit = {"Short": 1, "Medium": 2, "Long": 3}.get(length, 2)
+    compact = " ".join(sentence for sentence in sentences[:sentence_limit] if sentence).strip()
     words = compact.split()
-    if len(words) > 55:
-        compact = " ".join(words[:55]).rstrip(".,;:") + "."
+    max_words = {"Short": 28, "Medium": 55, "Long": 90}.get(length, 55)
+    if len(words) > max_words:
+        compact = " ".join(words[:max_words]).rstrip(".,;:") + "."
     return compact
 
 
-def _comment_fallback(comment_topic: str, creator_post: str) -> GeneratedComment:
+def _comment_fallback(comment_style: str, creator_post: str, tone: str = "Professional", length: str = "Medium") -> GeneratedComment:
     snippet = " ".join(creator_post.split()[:18])
-    if comment_topic == "Congratulate":
+    if comment_style == "Congratulate":
         comment = "Congrats on sharing this. The practical breakdown makes the idea much easier to act on."
-    elif comment_topic == "Agree":
+    elif comment_style == "Agree":
         comment = "Agreed. The strongest point here is that the workflow matters as much as the tool itself."
-    elif comment_topic == "Disagree":
+    elif comment_style == "Disagree":
         comment = "I see the point, though I would be careful about treating this as universal. The right answer still depends on the workflow and constraints."
-    elif comment_topic == "Challenge":
+    elif comment_style == "Challenge":
         comment = "Good point. The question I would ask is: what is the first signal that this approach is actually working in production?"
-    elif comment_topic == "Expert Insight":
+    elif comment_style == "Expert Insight":
         comment = "The underrated part is the operating model around this. Without review loops and clear ownership, even strong tools create noisy outputs."
     else:
         comment = f"Useful angle. One thing I would add: connect this back to the smallest repeatable workflow, not just the headline idea. Context: {snippet}"
-    return GeneratedComment(comment=_format_comment(comment), rationale="Deterministic fallback comment.")
+    if tone == "Casual":
+        comment = comment.replace("The practical", "I like the practical")
+    return GeneratedComment(comment=_format_comment(comment, length), rationale="Deterministic fallback comment.")
 
 
 def _require_creator_activity(
@@ -1197,19 +1377,27 @@ def _comment_response(activity: dict[str, Any], comment_record: dict[str, Any]) 
         user_id=activity["user_id"],
         creator_id=activity["creator_id"],
         post_id=activity["post_id"],
-        comment_topic=str(comment_record.get("topic", "")),
+        thread_id=str(comment_record.get("thread_id", "")),
+        comment_topic=str(comment_record.get("topic", comment_record.get("style", ""))),
+        style=str(comment_record.get("style", comment_record.get("topic", "Add Value"))),
+        tone=str(comment_record.get("tone", "Professional")),
+        length=str(comment_record.get("length", "Medium")),
         comment=str(comment_record.get("text", "")),
         provider=str(comment_record.get("provider", "")),
         model=str(comment_record.get("model", "")),
         generated_at=str(comment_record.get("generated_at", "")),
         commented=bool(comment_record.get("commented", False)),
+        modification_count=int(comment_record.get("modification_count", 0) or 0),
+        conversation=list(comment_record.get("conversation") or []),
     )
 
 
 def generate_comment(repo: DynamoRepository, request: GenerateCommentRequest) -> CommentResponse:
     user, _, activity = _require_creator_activity(repo, request.user_id, request.creator_id, request.post_id)
     config = llm_config()
-    comment_topic = _normalize_comment_topic(request.comment_topic)
+    comment_style = _normalize_comment_style(request.style, request.comment_topic)
+    tone = _normalize_comment_tone(request.tone)
+    length = _normalize_comment_length(request.length)
     creator_post = str(activity.get("raw_text", ""))
     generated = invoke_structured(
         config=config,
@@ -1217,22 +1405,153 @@ def generate_comment(repo: DynamoRepository, request: GenerateCommentRequest) ->
         system_prompt=COMMENT_GENERATION_SYSTEM_PROMPT,
         user_prompt=COMMENT_GENERATION_USER_PROMPT.format(
             creator_post=creator_post[:5000],
-            comment_topic=comment_topic,
+            comment_style=comment_style,
+            tone=tone,
+            length=length,
             resume_profile=json.dumps(user.get("profile") or {}, ensure_ascii=True, indent=2),
         ),
-        fallback_factory=lambda: _comment_fallback(comment_topic, creator_post),
+        fallback_factory=lambda: _comment_fallback(comment_style, creator_post, tone, length),
     )
     timestamp = now_iso()
+    text = _format_comment(generated.comment, length)
+    thread_id = str(uuid4())
+    conversation = [
+        {
+            "role": "user",
+            "content": (
+                f"Generate a {length.lower()} {tone.lower()} LinkedIn comment "
+                f"using {comment_style} style."
+            ),
+        },
+        {"role": "assistant", "content": text},
+    ]
+    repo.put_thread(
+        {
+            "user_id": request.user_id,
+            "thread_id": thread_id,
+            "topic": f"Comment on {activity.get('author_name') or activity.get('creator_id')}",
+            "topic_source": "comment_generation",
+            "generation_style": comment_style,
+            "original_post": text,
+            "current_post": text,
+            "conversation": conversation,
+            "provider": config.provider,
+            "model": config.model,
+            "source": {
+                "type": "comment",
+                "creator_id": activity["creator_id"],
+                "post_id": activity["post_id"],
+                "post_url": activity.get("post_url", ""),
+                "comment_style": comment_style,
+                "tone": tone,
+                "length": length,
+            },
+            "writing_style_snapshot": {},
+            "profile_snapshot": user.get("profile") or {},
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "generated_at": timestamp,
+            "modified_at": "",
+            "modification_count": 0,
+        }
+    )
     engagement = dict(activity.get("engagement") or {})
     previous_comment = dict(engagement.get("comment") or {})
     comment_record = {
         **previous_comment,
-        "topic": comment_topic,
-        "text": _format_comment(generated.comment),
+        "thread_id": thread_id,
+        "topic": comment_style,
+        "style": comment_style,
+        "tone": tone,
+        "length": length,
+        "text": text,
         "generated_at": timestamp,
         "provider": config.provider,
         "model": config.model,
+        "modification_count": 0,
+        "conversation": conversation,
     }
+    engagement["comment"] = comment_record
+    activity["engagement"] = engagement
+    repo.put_activity(activity)
+    return _comment_response(activity, comment_record)
+
+
+def modify_comment(repo: DynamoRepository, request: ModifyCommentRequest) -> CommentResponse:
+    user = require_user(repo, request.user_id)
+    thread = repo.get_thread(request.user_id, request.thread_id)
+    if not thread:
+        raise KeyError(f"Thread not found: {request.thread_id}")
+    source = dict(thread.get("source") or {})
+    if source.get("type") != "comment":
+        raise KeyError(f"Comment thread not found: {request.thread_id}")
+
+    creator_id = str(source.get("creator_id", ""))
+    post_id = str(source.get("post_id", ""))
+    _, _, activity = _require_creator_activity(repo, request.user_id, creator_id, post_id)
+
+    comment_style = _normalize_comment_style(request.style or source.get("comment_style"))
+    tone = _normalize_comment_tone(request.tone or source.get("tone"))
+    length = _normalize_comment_length(request.length or source.get("length"))
+    current_comment = str(thread.get("current_post", ""))
+    messages = list(thread.get("conversation") or [])
+    messages.append({"role": "user", "content": request.modification_message})
+    config = llm_config()
+    generated = invoke_structured(
+        config=config,
+        schema=GeneratedComment,
+        system_prompt=COMMENT_MODIFICATION_SYSTEM_PROMPT,
+        user_prompt=COMMENT_MODIFICATION_USER_PROMPT.format(
+            creator_post=str(activity.get("raw_text", ""))[:5000],
+            current_comment=current_comment,
+            user_request=request.modification_message,
+            conversation_history=json.dumps(messages[-10:], ensure_ascii=True, indent=2),
+            comment_style=comment_style,
+            tone=tone,
+            length=length,
+            resume_profile=json.dumps(user.get("profile") or {}, ensure_ascii=True, indent=2),
+        ),
+        fallback_factory=lambda: GeneratedComment(
+            comment=_format_comment(f"{current_comment} {request.modification_message}", length),
+            rationale="Deterministic fallback comment modification.",
+        ),
+    )
+    timestamp = now_iso()
+    revised_comment = _format_comment(generated.comment, length)
+    messages.append({"role": "assistant", "content": revised_comment})
+    modification_count = int(thread.get("modification_count", 0) or 0) + 1
+
+    thread["current_post"] = revised_comment
+    thread["conversation"] = messages
+    thread["provider"] = config.provider
+    thread["model"] = config.model
+    thread["updated_at"] = timestamp
+    thread["modified_at"] = timestamp
+    thread["modification_count"] = modification_count
+    source["comment_style"] = comment_style
+    source["tone"] = tone
+    source["length"] = length
+    thread["source"] = source
+    repo.put_thread(thread)
+
+    engagement = dict(activity.get("engagement") or {})
+    comment_record = dict(engagement.get("comment") or {})
+    comment_record.update(
+        {
+            "thread_id": request.thread_id,
+            "topic": comment_style,
+            "style": comment_style,
+            "tone": tone,
+            "length": length,
+            "text": revised_comment,
+            "generated_at": str(comment_record.get("generated_at", thread.get("generated_at", timestamp))),
+            "modified_at": timestamp,
+            "provider": config.provider,
+            "model": config.model,
+            "modification_count": modification_count,
+            "conversation": messages,
+        }
+    )
     engagement["comment"] = comment_record
     activity["engagement"] = engagement
     repo.put_activity(activity)
@@ -1245,7 +1564,7 @@ def mark_activity_commented(repo: DynamoRepository, request: MarkCommentedReques
     engagement = dict(activity.get("engagement") or {})
     comment_record = dict(engagement.get("comment") or {})
     if request.comment_text is not None:
-        comment_record["text"] = _format_comment(request.comment_text)
+        comment_record["text"] = _format_comment(request.comment_text, str(comment_record.get("length", "Medium")))
     comment_record["commented"] = request.commented
     comment_record["marked_at"] = timestamp
     engagement["comment"] = comment_record

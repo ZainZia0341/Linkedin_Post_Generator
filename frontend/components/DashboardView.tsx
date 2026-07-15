@@ -65,6 +65,7 @@ export function DashboardView() {
   const threadCount = stats?.thread_count ?? threads.length;
   const newPostsToday = stats?.new_posts_today_count ?? recent.length;
   const hasRecentPosts = recent.length > 0;
+  const recentPostThreads = sortedThreads.filter((thread) => thread.topic_source !== "comment_generation");
 
   return (
     <AppShell
@@ -109,13 +110,13 @@ export function DashboardView() {
           </section>
 
           <section className="draft-grid">
-            {sortedThreads.length ? (
-              sortedThreads.slice(0, 2).map((thread) => (
+            {recentPostThreads.length ? (
+              recentPostThreads.slice(0, 2).map((thread) => (
                 <article className="work-card" key={thread.thread_id}>
                   <div className="pill">{compactDate(thread.updated_at) || "Recent"}</div>
                   <h4>{threadTitle(thread)}</h4>
                   <p>{thread.generation_style || "Generated LinkedIn post"}</p>
-                  <Link href="/generate">
+                  <Link href={`/generate?thread_id=${encodeURIComponent(thread.thread_id)}`}>
                     Resume Editing <ArrowRight size={15} />
                   </Link>
                 </article>
@@ -158,8 +159,26 @@ export function DashboardView() {
         </div>
 
         <aside className="recent-panel">
-          <h3>Recent Activity</h3>
-          <div className="empty-mini">App history is waiting on a backend history endpoint.</div>
+          <h3>Recent Threads</h3>
+          {recentPostThreads.length ? (
+            <div className="timeline">
+              {recentPostThreads.slice(0, 5).map((thread) => (
+                <Link
+                  className="timeline-item"
+                  href={`/generate?thread_id=${encodeURIComponent(thread.thread_id)}`}
+                  key={thread.thread_id}
+                >
+                  <span />
+                  <div>
+                    <strong>{threadTitle(thread)}</strong>
+                    <small>{compactDate(thread.updated_at) || "Recent"}</small>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-mini">Generated posts will show here.</div>
+          )}
         </aside>
       </div>
 
