@@ -94,15 +94,25 @@ export function RunScrapingDialog({
     }
   }
 
+  function requestClose() {
+    if (!busy) onClose();
+  }
+
   return (
-    <div className="modal-backdrop">
-      <section className="scrape-modal" role="dialog" aria-modal="true" aria-labelledby="run-scraping-title">
+    <div className="modal-backdrop" onClick={requestClose}>
+      <section
+        className="scrape-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="run-scraping-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="scrape-modal-header">
           <div>
             <h2 id="run-scraping-title">Run Scraping</h2>
             <p>Select creators and the supported scraping configuration for this job.</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close">
+          <button className="icon-button" type="button" onClick={requestClose} disabled={busy} aria-label="Close">
             <X size={19} />
           </button>
         </header>
@@ -255,7 +265,7 @@ export function RunScrapingDialog({
         </div>
 
         <footer className="scrape-modal-footer">
-          <button className="secondary-button" type="button" onClick={onClose}>
+          <button className="secondary-button" type="button" onClick={requestClose} disabled={busy}>
             Cancel
           </button>
           <button className="primary-button" type="button" onClick={runScrape} disabled={!canRun}>

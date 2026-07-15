@@ -13,6 +13,7 @@ import {
   Loader2,
   Plus,
   Search,
+  Trash2,
   UploadCloud,
   Users,
   X,
@@ -24,8 +25,11 @@ import {
   DEFAULT_USER_ID,
   ENABLE_SCRAPING,
   addCreator,
+  deleteCreator,
   fetchCreatorProfiles,
   fetchUserData,
+  getCachedCreatorProfiles,
+  getCachedUserData,
   importCreators,
   previewCreatorImport,
   scrapeCreatorProfiles,
@@ -45,15 +49,19 @@ type CreatorSortBy = "recently_added" | "last_checked_desc" | "last_checked_asc"
 const PAGE_SIZE = 10;
 
 export function CreatorsView() {
-  const [userData, setUserData] = useState<UserDataResponse | null>(null);
-  const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
+  const [userData, setUserData] = useState<UserDataResponse | null>(() => getCachedUserData(DEFAULT_USER_ID));
+  const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(() => {
+    const cachedProfiles = getCachedCreatorProfiles(DEFAULT_USER_ID, 500);
+    return new Map((cachedProfiles ?? []).map((profile) => [profile.creator_id, profile]));
+  });
   const [query, setQuery] = useState("");
   const [lastCheckedSort, setLastCheckedSort] = useState<LastCheckedSort>("desc");
   const [sortBy, setSortBy] = useState<CreatorSortBy>("recently_added");
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !getCachedUserData(DEFAULT_USER_ID));
+  const [deletingCreatorIds, setDeletingCreatorIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
@@ -63,7 +71,7 @@ export function CreatorsView() {
   }
 
   async function load() {
-    setLoading(true);
+    if (!getCachedUserData(DEFAULT_USER_ID)) setLoading(true);
     setError("");
     try {
       const [dataResult, profileResult] = await Promise.allSettled([
@@ -164,6 +172,64 @@ export function CreatorsView() {
     showSuccess(`${selectedCreators.length} creator profile${selectedCreators.length === 1 ? "" : "s"} copied`);
   }
 
+  function removeCreatorsFromLocalState(creatorIds: string[]) {
+    const creatorIdSet = new Set(creatorIds);
+    setUserData((current) => {
+      if (!current) return current;
+      const nextCreators = current.creators.filter((creator) => !creatorIdSet.has(creator.creator_id));
+      return {
+        ...current,
+        creators: nextCreators,
+        dashboard_stats: {
+          ...current.dashboard_stats,
+          creator_count: nextCreators.length,
+        },
+      };
+    });
+    setProfileMap((current) => {
+      const next = new Map(current);
+      creatorIds.forEach((creatorId) => next.delete(creatorId));
+      return next;
+    });
+    setSelectedCreatorIds((current) => {
+      const next = new Set(current);
+      creatorIds.forEach((creatorId) => next.delete(creatorId));
+      return next;
+    });
+  }
+
+  async function deleteCreators(creatorIds: string[]) {
+    const uniqueCreatorIds = Array.from(new Set(creatorIds)).filter(Boolean);
+    if (!uniqueCreatorIds.length) return;
+    const confirmed = window.confirm(
+      uniqueCreatorIds.length === 1
+        ? "Delete this creator and their saved posts?"
+        : `Delete ${uniqueCreatorIds.length} creators and their saved posts?`,
+    );
+    if (!confirmed) return;
+
+    setDeletingCreatorIds(new Set(uniqueCreatorIds));
+    setError("");
+    const results = await Promise.allSettled(
+      uniqueCreatorIds.map((creatorId) => deleteCreator(DEFAULT_USER_ID, creatorId)),
+    );
+    const deletedIds = uniqueCreatorIds.filter((_, index) => results[index].status === "fulfilled");
+    const failedCount = results.length - deletedIds.length;
+    if (deletedIds.length) {
+      removeCreatorsFromLocalState(deletedIds);
+      showSuccess(`${deletedIds.length} creator${deletedIds.length === 1 ? "" : "s"} deleted`);
+    }
+    if (failedCount) {
+      const firstError = results.find((result) => result.status === "rejected");
+      setError(
+        firstError?.status === "rejected" && firstError.reason instanceof Error
+          ? firstError.reason.message
+          : `${failedCount} creator${failedCount === 1 ? "" : "s"} could not be deleted.`,
+      );
+    }
+    setDeletingCreatorIds(new Set());
+  }
+
   return (
     <AppShell
       active="creators"
@@ -225,6 +291,15 @@ export function CreatorsView() {
               <Copy size={14} />
               Copy
             </button>
+            <button
+              className="danger-button compact"
+              type="button"
+              onClick={() => void deleteCreators(selectedCreators.map((creator) => creator.creator_id))}
+              disabled={!selectedCreators.length || deletingCreatorIds.size > 0}
+            >
+              {deletingCreatorIds.size > 0 ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
+              Delete
+            </button>
           </div>
         </div>
 
@@ -265,7 +340,7 @@ export function CreatorsView() {
                   </button>
                 </th>
                 <th>New post (last 24 h)</th>
-                <th>Profile</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -275,8 +350,10 @@ export function CreatorsView() {
                     creator={creator}
                     profile={profileMap.get(creator.creator_id)}
                     selected={selectedCreatorIds.has(creator.creator_id)}
+                    deleting={deletingCreatorIds.has(creator.creator_id)}
                     onToggleSelected={toggleCreatorSelection}
                     onCopyProfile={copyCreatorProfile}
+                    onDeleteCreator={(creatorId) => void deleteCreators([creatorId])}
                     key={creator.creator_id}
                   />
                 ))
@@ -492,14 +569,18 @@ function CreatorRow({
   creator,
   profile,
   selected,
+  deleting,
   onToggleSelected,
   onCopyProfile,
+  onDeleteCreator,
 }: {
   creator: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
   selected: boolean;
+  deleting: boolean;
   onToggleSelected: (creatorId: string) => void;
   onCopyProfile: (creator: CreatorResponse) => void;
+  onDeleteCreator: (creatorId: string) => void;
 }) {
   const label = safeProfileName(profile, creator);
   const headline = safeProfileHeadline(profile, creator);
@@ -539,9 +620,20 @@ function CreatorRow({
       <td>{creator.last_checked_at ? compactDate(creator.last_checked_at) : "Never"}</td>
       <td>{creator.new_count ? `${creator.new_count} New` : "0 Posts"}</td>
       <td>
-        <button className="icon-button tiny" type="button" onClick={() => onCopyProfile(creator)} aria-label={`Copy ${label} profile`}>
-          <Copy size={15} />
-        </button>
+        <div className="creator-row-actions">
+          <button className="icon-button tiny" type="button" onClick={() => onCopyProfile(creator)} aria-label={`Copy ${label} profile`}>
+            <Copy size={15} />
+          </button>
+          <button
+            className="icon-button tiny danger-icon-button"
+            type="button"
+            onClick={() => onDeleteCreator(creator.creator_id)}
+            disabled={deleting}
+            aria-label={`Delete ${label}`}
+          >
+            {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -628,15 +720,25 @@ function AddCreatorDialog({
     }
   }
 
+  function requestClose() {
+    if (!busy) onClose();
+  }
+
   return (
-    <div className="drawer-backdrop">
-      <aside className="side-drawer no-tabs" aria-modal="true" role="dialog" aria-labelledby="add-creator-title">
+    <div className="drawer-backdrop" onClick={requestClose}>
+      <aside
+        className="side-drawer no-tabs"
+        aria-modal="true"
+        role="dialog"
+        aria-labelledby="add-creator-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="drawer-header">
           <div>
             <h2 id="add-creator-title">Add Creator</h2>
             <p>Track a creator by adding their LinkedIn profile.</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close">
+          <button className="icon-button" type="button" onClick={requestClose} disabled={busy} aria-label="Close">
             <X size={20} />
           </button>
         </header>
@@ -668,7 +770,7 @@ function AddCreatorDialog({
             {busy ? <Loader2 className="spin" size={17} /> : null}
             {busy ? (ENABLE_SCRAPING ? "Adding and scraping..." : "Adding...") : "Add Creator"}
           </button>
-          <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
+          <button className="secondary-button" type="button" onClick={requestClose} disabled={busy}>Cancel</button>
         </footer>
       </aside>
     </div>
@@ -684,20 +786,37 @@ function BulkImportDialog({
   onImported: (message: string) => void;
   onDataChanged: () => void;
 }) {
+  const [locked, setLocked] = useState(false);
+
+  function requestClose() {
+    if (!locked) onClose();
+  }
+
   return (
-    <div className="drawer-backdrop">
-      <aside className="side-drawer no-tabs" aria-modal="true" role="dialog" aria-labelledby="bulk-import-title">
+    <div className="drawer-backdrop" onClick={requestClose}>
+      <aside
+        className="side-drawer no-tabs"
+        aria-modal="true"
+        role="dialog"
+        aria-labelledby="bulk-import-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="drawer-header">
           <div>
             <h2 id="bulk-import-title">Bulk Import Creators</h2>
             <p>Upload CSV, Excel or TXT files containing LinkedIn profile URLs.</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close">
+          <button className="icon-button" type="button" onClick={requestClose} disabled={locked} aria-label="Close">
             <X size={20} />
           </button>
         </header>
 
-        <BulkImportForm onClose={onClose} onImported={onImported} onDataChanged={onDataChanged} />
+        <BulkImportForm
+          onClose={requestClose}
+          onImported={onImported}
+          onDataChanged={onDataChanged}
+          onBusyChange={setLocked}
+        />
       </aside>
     </div>
   );
@@ -707,10 +826,12 @@ function BulkImportForm({
   onClose,
   onImported,
   onDataChanged,
+  onBusyChange,
 }: {
   onClose: () => void;
   onImported: (message: string) => void;
   onDataChanged: () => void;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -726,6 +847,10 @@ function BulkImportForm({
   const duplicateRows = preview?.duplicate_creators ?? [];
   const previewErrors = preview?.errors ?? [];
   const canImport = Boolean(file && preview && newRows.length > 0 && !previewBusy && !busy);
+
+  useEffect(() => {
+    onBusyChange(previewBusy || busy);
+  }, [busy, onBusyChange, previewBusy]);
 
   async function handleFileChange(nextFile: File | null) {
     setFile(nextFile);
@@ -846,7 +971,7 @@ function BulkImportForm({
       </div>
 
       <footer className="drawer-footer">
-        <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
+        <button className="secondary-button" type="button" onClick={onClose} disabled={previewBusy || busy}>Cancel</button>
         <button className="primary-button" type="button" onClick={submit} disabled={!canImport}>
           {busy ? <Loader2 className="spin" size={17} /> : null}
           {busy ? (ENABLE_SCRAPING ? "Importing and scraping..." : "Importing...") : "Import Creators"}

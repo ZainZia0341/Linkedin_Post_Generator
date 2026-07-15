@@ -45,6 +45,7 @@ from app.api.services import (
     build_dashboard_stats,
     create_creator,
     create_user,
+    delete_creator_with_activities,
     generate_comment,
     generate_from_activity,
     generate_post,
@@ -398,8 +399,10 @@ def delete_creator(
     creator_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
 ) -> DeleteResponse:
-    repo.delete_creator(user_id, creator_id)
-    return DeleteResponse(ok=True, message=f"Deleted creator {creator_id}.")
+    try:
+        return delete_creator_with_activities(repo, user_id, creator_id)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
 
 
 @app.post("/creators/scrape", response_model=ScrapeCreatorsResponse)

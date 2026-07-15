@@ -21,6 +21,7 @@ from app.api.services import (
     import_creators_from_file,
     list_commented_activities,
     mark_activity_commented,
+    delete_creator_with_activities,
     modify_post,
     scrape_creators,
     scrape_creators_recent_24h,
@@ -56,6 +57,9 @@ class MemoryRepo:
     def put_creator(self, creator: dict):
         self.creators[(creator["user_id"], creator["creator_id"])] = dict(creator)
         return self.creators[(creator["user_id"], creator["creator_id"])]
+
+    def delete_creator(self, user_id: str, creator_id: str):
+        self.creators.pop((user_id, creator_id), None)
 
     def list_creators(self, user_id: str, limit: int | None = None):
         creators = [creator for (stored_user_id, _), creator in self.creators.items() if stored_user_id == user_id]
@@ -142,6 +146,34 @@ def test_api_service_add_creator_duplicate_returns_existing_without_rewrite() ->
     assert duplicate.updated_at == "kept-updated-at"
     assert duplicate.seen_count == 7
     assert len(repo.creators) == 1
+
+
+def test_delete_creator_removes_saved_activities() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    create_creator(repo, "test-user-1", "https://www.linkedin.com/in/delete-me/")
+    repo.put_activity(
+        {
+            "user_creator_id": "test-user-1#delete-me",
+            "user_id": "test-user-1",
+            "creator_id": "delete-me",
+            "post_id": "urn:li:activity:delete-me",
+            "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:delete-me/",
+            "raw_text": "Saved post to delete with the creator.",
+            "author_name": "Delete Me",
+            "posted_at_text": "1h",
+            "fetched_at": services.now_iso(),
+            "content_hash": "delete-hash",
+            "source": "playwright",
+            "is_new": True,
+        }
+    )
+
+    response = delete_creator_with_activities(repo, "test-user-1", "delete-me")
+
+    assert response.ok is True
+    assert repo.get_creator("test-user-1", "delete-me") is None
+    assert repo.list_creator_activities("test-user-1", "delete-me", 10) == []
 
 
 def test_bulk_creator_import_skips_existing_and_file_duplicates() -> None:

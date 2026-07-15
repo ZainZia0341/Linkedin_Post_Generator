@@ -18,24 +18,35 @@ import {
   fetchCreatorProfiles,
   fetchUserActivities,
   fetchUserData,
+  getCachedCreatorProfiles,
+  getCachedUserActivities,
+  getCachedUserData,
 } from "@/lib/api";
 import { activityTitle, compactDate, displayName, initials, previewText, sortThreads } from "@/lib/format";
 import type { ActivityResponse, CreatorProfileDetailsResponse, CreatorResponse, UserDataResponse } from "@/lib/types";
 
 const POSTS_PAGE_SIZE = 9;
+type TimeBucket = "last_12h" | "day_1" | "day_2" | "day_3";
+
+function hasCachedPostsData() {
+  return Boolean(getCachedUserData(DEFAULT_USER_ID) && getCachedUserActivities(DEFAULT_USER_ID, 100));
+}
 
 export function PostsScrapingView() {
-  const [userData, setUserData] = useState<UserDataResponse | null>(null);
-  const [activities, setActivities] = useState<ActivityResponse[]>([]);
-  const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(new Map());
+  const [userData, setUserData] = useState<UserDataResponse | null>(() => getCachedUserData(DEFAULT_USER_ID));
+  const [activities, setActivities] = useState<ActivityResponse[]>(() => getCachedUserActivities(DEFAULT_USER_ID, 100) ?? []);
+  const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(() => {
+    const cachedProfiles = getCachedCreatorProfiles(DEFAULT_USER_ID, 500);
+    return new Map((cachedProfiles ?? []).map((profile) => [profile.creator_id, profile]));
+  });
   const [selectedPost, setSelectedPost] = useState<ActivityResponse | null>(null);
   const [showScrapeDialog, setShowScrapeDialog] = useState(false);
   const [query, setQuery] = useState("");
   const [creatorFilter, setCreatorFilter] = useState("all");
-  const [windowHours, setWindowHours] = useState(24);
+  const [timeBucket, setTimeBucket] = useState<TimeBucket>("day_1");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !hasCachedPostsData());
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
@@ -45,7 +56,7 @@ export function PostsScrapingView() {
   }
 
   async function load() {
-    setLoading(true);
+    if (!hasCachedPostsData()) setLoading(true);
     setError("");
     try {
       const [dataResult, activityResult, profileResult] = await Promise.allSettled([
@@ -73,7 +84,7 @@ export function PostsScrapingView() {
 
   useEffect(() => {
     setPage(1);
-  }, [creatorFilter, query, sortOrder, windowHours]);
+  }, [creatorFilter, query, sortOrder, timeBucket]);
 
   const creators = userData?.creators ?? [];
   const creatorById = useMemo(() => {
@@ -89,7 +100,7 @@ export function PostsScrapingView() {
       const searchable = `${activity.raw_text} ${activity.creator_id} ${activity.author_name || ""} ${creator?.display_name || ""} ${profile?.name || ""} ${profile?.headline || ""}`.toLowerCase();
       const matchesQuery = !normalized || searchable.includes(normalized);
       const matchesCreator = creatorFilter === "all" || activity.creator_id === creatorFilter;
-      const matchesWindow = isWithinWindow(activity.fetched_at, windowHours);
+      const matchesWindow = isWithinTimeBucket(activity.fetched_at, timeBucket);
       return matchesQuery && matchesCreator && matchesWindow;
     }).sort((left, right) => {
       const leftTime = new Date(left.fetched_at).getTime();
@@ -97,7 +108,7 @@ export function PostsScrapingView() {
       if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) return 0;
       return sortOrder === "newest" ? rightTime - leftTime : leftTime - rightTime;
     });
-  }, [activities, creatorById, creatorFilter, profileMap, query, sortOrder, windowHours]);
+  }, [activities, creatorById, creatorFilter, profileMap, query, sortOrder, timeBucket]);
   const visiblePosts = filteredActivities;
   const newPosts = filteredActivities.filter(isFetchedWithinLastDay);
   const totalPages = Math.max(1, Math.ceil(visiblePosts.length / POSTS_PAGE_SIZE));
@@ -157,11 +168,11 @@ export function PostsScrapingView() {
               </option>
             ))}
           </select>
-          <select value={windowHours} onChange={(event) => setWindowHours(Number(event.target.value))} aria-label="Time window filter">
-            <option value={12}>Last 12 Hours</option>
-            <option value={24}>Last Day</option>
-            <option value={48}>Last 2 Days</option>
-            <option value={72}>Last 3 Days</option>
+          <select value={timeBucket} onChange={(event) => setTimeBucket(event.target.value as TimeBucket)} aria-label="Time window filter">
+            <option value="last_12h">Last 12 Hours</option>
+            <option value="day_1">Last Day</option>
+            <option value="day_2">Last 2 Days</option>
+            <option value="day_3">Last 3 Days</option>
           </select>
           <select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")} aria-label="Sort filter">
             <option value="newest">Newest First</option>
@@ -433,10 +444,14 @@ function cleanLinkedInVisibilityText(value: string) {
     .trim() || "recently";
 }
 
-function isWithinWindow(value: string, windowHours: number) {
+function isWithinTimeBucket(value: string, bucket: TimeBucket) {
   const time = new Date(value).getTime();
   if (Number.isNaN(time)) return true;
-  return Date.now() - time <= windowHours * 60 * 60 * 1000;
+  const ageHours = (Date.now() - time) / (60 * 60 * 1000);
+  if (bucket === "last_12h") return ageHours >= 0 && ageHours <= 12;
+  if (bucket === "day_1") return ageHours >= 0 && ageHours <= 24;
+  if (bucket === "day_2") return ageHours > 24 && ageHours <= 48;
+  return ageHours > 48 && ageHours <= 72;
 }
 
 function isFetchedWithinLastDay(activity: ActivityResponse) {

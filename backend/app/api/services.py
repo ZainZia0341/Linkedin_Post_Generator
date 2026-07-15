@@ -24,6 +24,7 @@ from app.api.schemas import (
     CreatorProfileDetailsResponse,
     CreatorResponse,
     DashboardStatsResponse,
+    DeleteResponse,
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
@@ -427,6 +428,22 @@ def create_creator(repo: DynamoRepository, user_id: str, profile_url: str) -> Cr
         "new_count": 0,
     }
     return CreatorResponse.model_validate(repo.put_creator(record))
+
+
+def delete_creator_with_activities(repo: DynamoRepository, user_id: str, creator_id: str) -> DeleteResponse:
+    require_user(repo, user_id)
+    if not repo.get_creator(user_id, creator_id):
+        raise KeyError(f"Creator not found: {creator_id}")
+
+    deleted_activity_count = 0
+    for activity in repo.list_creator_activities(user_id, creator_id, CREATOR_IMPORT_EXISTING_LIMIT):
+        repo.delete_activity(user_id, creator_id, str(activity.get("post_id", "")))
+        deleted_activity_count += 1
+    repo.delete_creator(user_id, creator_id)
+    return DeleteResponse(
+        ok=True,
+        message=f"Deleted creator {creator_id} and {deleted_activity_count} saved post(s).",
+    )
 
 
 def creator_response(creator: dict[str, Any]) -> CreatorResponse:

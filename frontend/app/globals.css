@@ -250,7 +250,7 @@ a {
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   min-height: 72px;
   padding: 18px 28px;
   border-bottom: 1px solid var(--line);
@@ -823,6 +823,12 @@ a {
   padding: 0 16px;
 }
 
+.danger-button.compact {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 .post-output {
   margin-top: 18px;
   min-height: 420px;
@@ -1113,6 +1119,18 @@ a {
   font-size: 12px;
   font-weight: 850;
   white-space: nowrap;
+}
+
+.creator-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.danger-icon-button {
+  color: #b91c1c;
+  background: #fff7f7;
+  border-color: #fecaca;
 }
 
 .compact-tabs {
