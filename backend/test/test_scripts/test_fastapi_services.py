@@ -3,14 +3,20 @@ from __future__ import annotations
 import io
 import time
 import zipfile
+from types import SimpleNamespace
 
 from app.api.schemas import (
+    CommentReplyActionRequest,
+    ConnectionRequestActionRequest,
     CreatorCreateRequest,
+    DmActionRequest,
     GenerateCommentRequest,
     GeneratePostRequest,
+    LinkedInPostPublishRequest,
     MarkCommentedRequest,
     ModifyPostRequest,
     RecentScrapeCreatorsRequest,
+    ScrapePostEngagementRequest,
     ScrapeCreatorsRequest,
 )
 from app.api.services import (
@@ -20,11 +26,18 @@ from app.api.services import (
     generate_post,
     import_creators_from_file,
     list_commented_activities,
+    list_linkedin_post_engagers,
+    list_linkedin_posts,
     mark_activity_commented,
     delete_creator_with_activities,
     modify_post,
     scrape_creators,
     scrape_creators_recent_24h,
+    scrape_linkedin_post_engagement_service,
+    send_comment_replies,
+    send_connection_requests,
+    send_dms,
+    track_published_linkedin_post,
 )
 import app.api.services as services
 from app.writing_style_extract import get_builtin_writing_style
@@ -36,6 +49,9 @@ class MemoryRepo:
         self.threads: dict[tuple[str, str], dict] = {}
         self.creators: dict[tuple[str, str], dict] = {}
         self.activities: dict[tuple[str, str, str], dict] = {}
+        self.own_posts: dict[tuple[str, str], dict] = {}
+        self.post_engagers: dict[tuple[str, str], dict] = {}
+        self.action_logs: dict[tuple[str, str], dict] = {}
 
     def get_user(self, user_id: str):
         return self.users.get(user_id)
@@ -83,6 +99,45 @@ class MemoryRepo:
             if stored_user_id == user_id and stored_creator_id == creator_id
         ]
         return activities[: limit or 10]
+
+    def put_own_post(self, post: dict):
+        self.own_posts[(post["user_id"], post["post_id"])] = dict(post)
+        return self.own_posts[(post["user_id"], post["post_id"])]
+
+    def get_own_post(self, user_id: str, post_id: str):
+        return self.own_posts.get((user_id, post_id))
+
+    def list_own_posts(self, user_id: str, limit: int | None = None):
+        posts = [post for (stored_user_id, _), post in self.own_posts.items() if stored_user_id == user_id]
+        return posts[: limit or 10]
+
+    def put_post_engager(self, engager: dict):
+        key = (engager["user_post_id"], engager["profile_key"])
+        self.post_engagers[key] = dict(engager)
+        return self.post_engagers[key]
+
+    def get_post_engager(self, user_id: str, post_id: str, profile_key: str):
+        return self.post_engagers.get((f"{user_id}#{post_id}", profile_key))
+
+    def list_post_engagers(self, user_id: str, post_id: str, limit: int | None = None):
+        user_post_id = f"{user_id}#{post_id}"
+        engagers = [
+            engager
+            for (stored_user_post_id, _), engager in self.post_engagers.items()
+            if stored_user_post_id == user_post_id
+        ]
+        return engagers[: limit or 10]
+
+    def put_action_log(self, action_log: dict):
+        self.action_logs[(action_log["user_id"], action_log["action_id"])] = dict(action_log)
+        return self.action_logs[(action_log["user_id"], action_log["action_id"])]
+
+    def get_action_log(self, user_id: str, action_id: str):
+        return self.action_logs.get((user_id, action_id))
+
+    def list_action_logs(self, user_id: str, limit: int | None = None):
+        logs = [log for (stored_user_id, _), log in self.action_logs.items() if stored_user_id == user_id]
+        return logs[: limit or 10]
 
 
 def test_api_service_generate_and_modify_offline() -> None:
@@ -414,3 +469,151 @@ def test_recent_24h_scrape_returns_seen_posts_again_and_filters_old(monkeypatch)
     stored_seen = repo.get_activity("test-user-1", "recent-person", "urn:li:activity:recent-seen")
     assert stored_seen["engagement"]["comment"]["commented"] is True
     assert stored_seen["raw_text"] == "Updated scrape text for the same recent creator post."
+
+
+def test_track_and_list_own_linkedin_posts() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+
+    tracked = track_published_linkedin_post(
+        repo,
+        LinkedInPostPublishRequest(
+            user_id="test-user-1",
+            thread_id="thread-1",
+            post_text="A practical post about durable AI workflows.",
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:123456789/",
+        ),
+    )
+
+    assert tracked.post_id == "urn:li:activity:123456789"
+    assert tracked.source == "platform"
+    posts = list_linkedin_posts(repo, "test-user-1", source="platform", window_hours=None, limit=10)
+    assert len(posts) == 1
+    assert posts[0].post_url.endswith("/urn:li:activity:123456789/")
+
+
+def test_post_engagement_scrape_merges_liker_and_commenter(monkeypatch) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    track_published_linkedin_post(
+        repo,
+        LinkedInPostPublishRequest(
+            user_id="test-user-1",
+            post_text="A post about AI infrastructure.",
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:555/",
+        ),
+    )
+
+    fake_result = SimpleNamespace(
+        engagers=[
+            {
+                "profile_url": "https://www.linkedin.com/in/same-person/",
+                "name": "Same Person",
+                "engagement_types": ["like"],
+                "connection_degree": "2nd",
+                "scraped_at": services.now_iso(),
+                "source": "playwright",
+            },
+            {
+                "profile_url": "https://www.linkedin.com/in/same-person/",
+                "name": "Same Person",
+                "engagement_types": ["comment"],
+                "connection_degree": "2nd",
+                "comment_text": "Useful point.",
+                "comment_text_hash": "hash-comment",
+                "scraped_at": services.now_iso(),
+                "source": "playwright",
+            },
+        ],
+        like_count=1,
+        comment_count=1,
+        warnings=[],
+        errors=[],
+        diagnostics={},
+    )
+    monkeypatch.setattr(services, "scrape_linkedin_post_engagement", lambda *args, **kwargs: fake_result)
+
+    response = scrape_linkedin_post_engagement_service(
+        repo,
+        "urn:li:activity:555",
+        ScrapePostEngagementRequest(user_id="test-user-1", launch_delay_seconds=0),
+    )
+
+    assert response.errors == []
+    assert response.engagers_saved == 1
+    engagers = list_linkedin_post_engagers(repo, "test-user-1", "urn:li:activity:555", limit=10)
+    assert len(engagers) == 1
+    assert engagers[0].engagement_types == ["comment", "like"]
+    assert engagers[0].comment_text == "Useful point."
+
+
+def test_linkedin_engager_actions_are_dry_run_and_role_filtered() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    track_published_linkedin_post(
+        repo,
+        LinkedInPostPublishRequest(
+            user_id="test-user-1",
+            post_text="A post about AI workflows.",
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:777/",
+        ),
+    )
+    post = repo.get_own_post("test-user-1", "urn:li:activity:777")
+    services._merge_engager_record(
+        repo,
+        post,
+        {
+            "profile_url": "https://www.linkedin.com/in/commenter/",
+            "name": "Commenter",
+            "connection_degree": "2nd",
+            "engagement_types": ["comment"],
+            "comment_text": "Great discussion.",
+            "scraped_at": services.now_iso(),
+        },
+    )
+    services._merge_engager_record(
+        repo,
+        post,
+        {
+            "profile_url": "https://www.linkedin.com/in/first-degree/",
+            "name": "First Degree",
+            "connection_degree": "1st",
+            "engagement_types": ["like"],
+            "scraped_at": services.now_iso(),
+        },
+    )
+
+    replies = send_comment_replies(
+        repo,
+        CommentReplyActionRequest(
+            user_id="test-user-1",
+            post_id="urn:li:activity:777",
+            reply_text="Thanks for sharing this.",
+            dry_run=True,
+            launch_delay_seconds=0,
+        ),
+    )
+    assert {result.skip_reason for result in replies.results} == {"dry_run", "not_a_commenter"}
+
+    connects = send_connection_requests(
+        repo,
+        ConnectionRequestActionRequest(
+            user_id="test-user-1",
+            post_id="urn:li:activity:777",
+            dry_run=True,
+            launch_delay_seconds=0,
+        ),
+    )
+    assert {result.skip_reason for result in connects.results} == {"dry_run", "already_first_degree"}
+
+    dms = send_dms(
+        repo,
+        DmActionRequest(
+            user_id="test-user-1",
+            post_id="urn:li:activity:777",
+            message="Appreciate your engagement.",
+            dry_run=True,
+            launch_delay_seconds=0,
+        ),
+    )
+    assert {result.skip_reason for result in dms.results} == {"dry_run", "not_first_degree"}

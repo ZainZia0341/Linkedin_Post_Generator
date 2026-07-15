@@ -25,18 +25,32 @@ from app.api.schemas import (
     CreatorResponse,
     DashboardStatsResponse,
     DeleteResponse,
+    CommentReplyActionRequest,
+    ConnectionRequestActionRequest,
+    DmActionRequest,
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
+    LinkedInActionBatchResponse,
+    LinkedInActionLogResponse,
+    LinkedInActionResult,
+    LinkedInPostPublishRequest,
+    LinkedInPostPublishResponse,
     MarkCommentedRequest,
     ModifyPostRequest,
+    OwnPostResponse,
+    PostEngagementScrapeResponse,
+    PostEngagerResponse,
     RecentActivitiesResponse,
     RecentScrapeCreatorsRequest,
     RecentScrapeCreatorsResponse,
+    ScrapePostEngagementRequest,
     ScrapeCreatorProfilesRequest,
     ScrapeCreatorProfilesResponse,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
+    SyncRecentOwnPostsRequest,
+    SyncRecentOwnPostsResponse,
     ThreadResponse,
     ThreadSummary,
     UserResponse,
@@ -54,6 +68,8 @@ from app.creator_tracking import get_profile_id, normalize_linkedin_profile_url
 from app.db.dynamodb import DynamoRepository
 from app.graph_state import run_post_chat_edit, run_post_generation
 from app.langchain_deep_search import research_trending_topics
+from app.linkedin_post_actions import reply_to_comment, send_connection_request, send_dm
+from app.linkedin_post_engagement import scrape_linkedin_post_engagement
 from app.linkedin_playwright_scraper import fetch_profile_details, fetch_recent_profile_posts
 from app.llms.llm import LLMConfig, invoke_structured
 from app.llms.llm_structure_schema import GeneratedComment
@@ -70,11 +86,13 @@ from app.writing_style_extract import extract_writing_style, get_builtin_writing
 POST_CREATION_ACTIONS = generation_style_labels()
 COMMENT_TOPICS = ["Add Value", "Congratulate", "Agree", "Disagree", "Challenge", "Expert Insight"]
 LINKEDIN_URL_RE = re.compile(r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?linkedin\.com(?:/[^\s<>'\"]*)?", flags=re.I)
+LINKEDIN_ACTIVITY_RE = re.compile(r"urn:li:activity:\d+", flags=re.I)
 CREATOR_IMPORT_EXISTING_LIMIT = 1000
 RECENTLY_ADDED_WINDOW_DAYS = 7
 SCRAPING_STALE_AFTER_HOURS = 24
 RECENT_ACTIVITY_RETENTION_DAYS = 3
 DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS = 3
+LINKEDIN_POST_EXISTING_LIMIT = 1000
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -1360,3 +1378,777 @@ def generate_from_activity(repo: DynamoRepository, request: GenerateFromActivity
     }
     repo.put_thread(thread)
     return thread_response(thread)
+
+
+def _normalize_profile_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "linkedin.com/in/" in text.lower():
+        try:
+            text = normalize_linkedin_profile_url(text)
+        except ValueError:
+            pass
+    text = text.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return text.lower()
+
+
+def _engager_profile_key(value: dict[str, Any] | str) -> str:
+    if isinstance(value, str):
+        return _normalize_profile_key(value)
+    for key in ("profile_url", "profile_urn", "profile_key", "name"):
+        normalized = _normalize_profile_key(value.get(key))
+        if normalized:
+            return normalized
+    digest = hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return f"unknown-{digest[:16]}"
+
+
+def _user_post_id(user_id: str, post_id: str) -> str:
+    return f"{user_id}#{post_id}"
+
+
+def _post_url_from_id(post_id: str, post_url: str = "") -> str:
+    if post_url:
+        return post_url
+    if post_id.startswith("urn:li:activity:"):
+        return f"https://www.linkedin.com/feed/update/{post_id}/"
+    return ""
+
+
+def _post_id_from_raw(raw_post: dict[str, Any]) -> str:
+    explicit_post_id = str(raw_post.get("post_id") or "").strip()
+    if explicit_post_id:
+        return explicit_post_id
+    post_url = str(raw_post.get("post_url") or "").strip()
+    match = LINKEDIN_ACTIVITY_RE.search(post_url)
+    if match:
+        return match.group(0)
+    raw_text = str(raw_post.get("raw_text") or raw_post.get("post_text") or raw_post.get("text") or post_url).strip()
+    digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    return f"post-{digest[:24]}"
+
+
+def _profile_url_from_user(user: dict[str, Any]) -> str:
+    profile = user.get("profile") or {}
+    for key in ("linkedin_url", "linkedin_profile_url", "profile_url", "linkedin"):
+        value = str(profile.get(key) or "").strip()
+        if "linkedin.com" in value.lower():
+            return value
+    links = profile.get("links")
+    if isinstance(links, list):
+        for item in links:
+            value = str(item or "").strip()
+            if "linkedin.com" in value.lower():
+                return value
+    return ""
+
+
+def _own_post_response(record: dict[str, Any]) -> OwnPostResponse:
+    return OwnPostResponse.model_validate(
+        {
+            "user_id": str(record.get("user_id", "")),
+            "post_id": str(record.get("post_id", "")),
+            "post_url": str(record.get("post_url", "")),
+            "source": str(record.get("source", "platform")),
+            "text": str(record.get("text", "")),
+            "created_at_text": str(record.get("created_at_text", "")),
+            "estimated_posted_at": str(record.get("estimated_posted_at", "")),
+            "first_seen_at": str(record.get("first_seen_at", "")),
+            "last_scraped_at": str(record.get("last_scraped_at", "")),
+            "reaction_count": int(record.get("reaction_count") or 0),
+            "comment_count": int(record.get("comment_count") or 0),
+            "impression_count": int(record.get("impression_count") or 0),
+            "scrape_status": str(record.get("scrape_status", "")),
+            "raw_metadata": dict(record.get("raw_metadata") or {}),
+            "status": str(record.get("status", "tracked")),
+        }
+    )
+
+
+def _post_engager_response(record: dict[str, Any]) -> PostEngagerResponse:
+    return PostEngagerResponse.model_validate(
+        {
+            "user_post_id": str(record.get("user_post_id", "")),
+            "user_id": str(record.get("user_id", "")),
+            "post_id": str(record.get("post_id", "")),
+            "post_url": str(record.get("post_url", "")),
+            "profile_key": str(record.get("profile_key", "")),
+            "profile_url": str(record.get("profile_url", "")),
+            "profile_urn": str(record.get("profile_urn", "")),
+            "name": str(record.get("name", "")),
+            "headline": str(record.get("headline", "")),
+            "connection_degree": str(record.get("connection_degree", "")),
+            "engagement_types": [str(item) for item in record.get("engagement_types", [])],
+            "comment_text": str(record.get("comment_text", "")),
+            "comment_permalink": str(record.get("comment_permalink", "")),
+            "comment_urn": str(record.get("comment_urn", "")),
+            "comment_text_hash": str(record.get("comment_text_hash", "")),
+            "comment_timestamp_text": str(record.get("comment_timestamp_text", "")),
+            "scraped_at": str(record.get("scraped_at", "")),
+            "source": str(record.get("source", "playwright")),
+            "raw_metadata": dict(record.get("raw_metadata") or {}),
+        }
+    )
+
+
+def _action_log_response(record: dict[str, Any]) -> LinkedInActionLogResponse:
+    return LinkedInActionLogResponse.model_validate(
+        {
+            "action_id": str(record.get("action_id", "")),
+            "user_id": str(record.get("user_id", "")),
+            "post_id": str(record.get("post_id", "")),
+            "profile_url": str(record.get("profile_url", "")),
+            "profile_key": str(record.get("profile_key", "")),
+            "action_type": str(record.get("action_type", "")),
+            "requested_text": str(record.get("requested_text", "")),
+            "final_text": str(record.get("final_text", "")),
+            "status": str(record.get("status", "")),
+            "skip_reason": str(record.get("skip_reason", "")),
+            "error_message": str(record.get("error_message", "")),
+            "created_at": str(record.get("created_at", "")),
+            "started_at": str(record.get("started_at", "")),
+            "finished_at": str(record.get("finished_at", "")),
+            "raw_metadata": dict(record.get("raw_metadata") or {}),
+        }
+    )
+
+
+def _put_own_post_from_raw(
+    repo: DynamoRepository,
+    user_id: str,
+    raw_post: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    timestamp = now_iso()
+    post_id = _post_id_from_raw(raw_post)
+    existing = repo.get_own_post(user_id, post_id) or {}
+    estimated_posted_at = _estimated_posted_at(raw_post)
+    record = {
+        **existing,
+        "user_id": user_id,
+        "post_id": post_id,
+        "post_url": _post_url_from_id(post_id, str(raw_post.get("post_url") or existing.get("post_url", ""))),
+        "source": source if source in {"platform", "direct"} else "direct",
+        "text": str(raw_post.get("raw_text") or raw_post.get("post_text") or raw_post.get("text") or existing.get("text", "")),
+        "created_at_text": str(raw_post.get("posted_at_text") or raw_post.get("created_at_text") or existing.get("created_at_text", "")),
+        "estimated_posted_at": (
+            estimated_posted_at.isoformat()
+            if estimated_posted_at
+            else str(raw_post.get("estimated_posted_at") or existing.get("estimated_posted_at", ""))
+        ),
+        "first_seen_at": str(existing.get("first_seen_at") or raw_post.get("fetched_at") or timestamp),
+        "last_scraped_at": str(existing.get("last_scraped_at", "")),
+        "reaction_count": int(raw_post.get("reaction_count") or raw_post.get("like_count") or existing.get("reaction_count") or 0),
+        "comment_count": int(raw_post.get("comment_count") or existing.get("comment_count") or 0),
+        "impression_count": int(raw_post.get("impression_count") or existing.get("impression_count") or 0),
+        "scrape_status": str(existing.get("scrape_status", "")),
+        "raw_metadata": {**dict(existing.get("raw_metadata") or {}), "last_intake_raw": raw_post},
+        "status": "tracked",
+    }
+    return repo.put_own_post(record)
+
+
+def track_published_linkedin_post(
+    repo: DynamoRepository,
+    request: LinkedInPostPublishRequest,
+) -> LinkedInPostPublishResponse:
+    require_user(repo, request.user_id)
+    record = _put_own_post_from_raw(
+        repo,
+        request.user_id,
+        {
+            "post_id": request.post_id,
+            "post_url": request.post_url,
+            "post_text": request.post_text,
+            "thread_id": request.thread_id,
+            "fetched_at": now_iso(),
+        },
+        source=request.source or "platform",
+    )
+    return LinkedInPostPublishResponse.model_validate(_own_post_response(record).model_dump())
+
+
+def sync_recent_linkedin_posts(
+    repo: DynamoRepository,
+    request: SyncRecentOwnPostsRequest,
+) -> SyncRecentOwnPostsResponse:
+    user = require_user(repo, request.user_id)
+    profile_url = str(request.profile_url or _profile_url_from_user(user)).strip()
+    if not profile_url:
+        raise ValueError("profile_url is required unless the user profile contains a LinkedIn profile URL.")
+
+    _sleep_before_playwright_launch(request.launch_delay_seconds)
+    posts = fetch_recent_profile_posts(profile_url, max_posts=request.max_posts)
+    if posts and isinstance(posts[0], dict) and posts[0].get("error"):
+        return SyncRecentOwnPostsResponse(
+            user_id=request.user_id,
+            checked_count=0,
+            saved_count=0,
+            errors=[{"message": str(posts[0].get("message") or posts[0].get("error"))}],
+        )
+
+    saved_posts: list[OwnPostResponse] = []
+    checked_count = 0
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        checked_count += 1
+        if not str(post.get("raw_text", "")).strip():
+            continue
+        if not _is_post_inside_window(post, request.window_hours):
+            continue
+        record = _put_own_post_from_raw(repo, request.user_id, post, source="direct")
+        saved_posts.append(_own_post_response(record))
+
+    saved_posts.sort(key=lambda item: item.estimated_posted_at or item.first_seen_at, reverse=True)
+    return SyncRecentOwnPostsResponse(
+        user_id=request.user_id,
+        checked_count=checked_count,
+        saved_count=len(saved_posts),
+        posts=saved_posts,
+    )
+
+
+def list_linkedin_posts(
+    repo: DynamoRepository,
+    user_id: str,
+    source: str | None = None,
+    window_hours: int | None = 72,
+    limit: int | None = None,
+) -> list[OwnPostResponse]:
+    require_user(repo, user_id)
+    posts = [_own_post_response(post) for post in repo.list_own_posts(user_id, limit or LINKEDIN_POST_EXISTING_LIMIT)]
+    if source:
+        posts = [post for post in posts if post.source == source]
+    if window_hours:
+        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+        filtered: list[OwnPostResponse] = []
+        for post in posts:
+            parsed = _parse_activity_datetime(post.estimated_posted_at) or _parse_activity_datetime(post.first_seen_at)
+            if parsed and parsed >= cutoff:
+                filtered.append(post)
+        posts = filtered
+    posts.sort(key=lambda item: item.estimated_posted_at or item.first_seen_at, reverse=True)
+    return posts[: limit or API_LIST_LIMIT]
+
+
+def _merge_engager_record(
+    repo: DynamoRepository,
+    post: dict[str, Any],
+    raw_engager: dict[str, Any],
+) -> dict[str, Any]:
+    user_id = str(post["user_id"])
+    post_id = str(post["post_id"])
+    profile_key = _engager_profile_key(raw_engager)
+    existing = repo.get_post_engager(user_id, post_id, profile_key) or {}
+    engagement_types = sorted(
+        {
+            str(item)
+            for item in [
+                *list(existing.get("engagement_types") or []),
+                *list(raw_engager.get("engagement_types") or []),
+            ]
+            if str(item).strip()
+        }
+    )
+    raw_metadata = dict(existing.get("raw_metadata") or {})
+    raw_metadata.update(dict(raw_engager.get("raw_metadata") or {}))
+    record = {
+        **existing,
+        "user_post_id": _user_post_id(user_id, post_id),
+        "user_id": user_id,
+        "post_id": post_id,
+        "post_url": str(post.get("post_url", "")),
+        "profile_key": profile_key,
+        "profile_url": str(raw_engager.get("profile_url") or existing.get("profile_url", "")),
+        "profile_urn": str(raw_engager.get("profile_urn") or existing.get("profile_urn", "")),
+        "name": str(raw_engager.get("name") or existing.get("name", "")),
+        "headline": str(raw_engager.get("headline") or existing.get("headline", "")),
+        "connection_degree": str(raw_engager.get("connection_degree") or existing.get("connection_degree", "")),
+        "engagement_types": engagement_types,
+        "comment_text": str(raw_engager.get("comment_text") or existing.get("comment_text", "")),
+        "comment_permalink": str(raw_engager.get("comment_permalink") or existing.get("comment_permalink", "")),
+        "comment_urn": str(raw_engager.get("comment_urn") or existing.get("comment_urn", "")),
+        "comment_text_hash": str(raw_engager.get("comment_text_hash") or existing.get("comment_text_hash", "")),
+        "comment_timestamp_text": str(raw_engager.get("comment_timestamp_text") or existing.get("comment_timestamp_text", "")),
+        "scraped_at": str(raw_engager.get("scraped_at") or now_iso()),
+        "source": str(raw_engager.get("source") or existing.get("source", "playwright")),
+        "raw_metadata": raw_metadata,
+    }
+    return repo.put_post_engager(record)
+
+
+def scrape_linkedin_post_engagement_service(
+    repo: DynamoRepository,
+    post_id: str,
+    request: ScrapePostEngagementRequest,
+) -> PostEngagementScrapeResponse:
+    require_user(repo, request.user_id)
+    post = repo.get_own_post(request.user_id, post_id)
+    if not post:
+        raise KeyError(f"LinkedIn post not found: {post_id}")
+    post_url = str(post.get("post_url", ""))
+    if not post_url:
+        raise ValueError("The tracked post has no post_url. Track or sync a LinkedIn URL before scraping engagement.")
+
+    _sleep_before_playwright_launch(request.launch_delay_seconds)
+    result = scrape_linkedin_post_engagement(
+        post_url,
+        include_likes=request.include_likes,
+        include_comments=request.include_comments,
+    )
+
+    saved_by_profile_key: dict[str, PostEngagerResponse] = {}
+    if not result.errors:
+        for raw_engager in result.engagers:
+            saved_engager = _post_engager_response(_merge_engager_record(repo, post, raw_engager))
+            saved_by_profile_key[saved_engager.profile_key] = saved_engager
+
+    timestamp = now_iso()
+    post["last_scraped_at"] = timestamp
+    post["reaction_count"] = result.like_count
+    post["comment_count"] = result.comment_count
+    post["scrape_status"] = "failed" if result.errors else "scraped"
+    post["raw_metadata"] = {
+        **dict(post.get("raw_metadata") or {}),
+        "last_engagement_scrape": {
+            "scraped_at": timestamp,
+            "warnings": result.warnings,
+            "errors": result.errors,
+            "diagnostics": result.diagnostics,
+        },
+    }
+    repo.put_own_post(post)
+
+    return PostEngagementScrapeResponse(
+        user_id=request.user_id,
+        post_id=post_id,
+        like_count=result.like_count,
+        comment_count=result.comment_count,
+        engagers_saved=len(saved_by_profile_key),
+        warnings=result.warnings,
+        errors=result.errors,
+        engagers=list(saved_by_profile_key.values()),
+    )
+
+
+def list_linkedin_post_engagers(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+    engagement_type: str | None = None,
+    connection_degree: str | None = None,
+    limit: int | None = None,
+) -> list[PostEngagerResponse]:
+    require_user(repo, user_id)
+    if not repo.get_own_post(user_id, post_id):
+        raise KeyError(f"LinkedIn post not found: {post_id}")
+    engagers = [
+        _post_engager_response(engager)
+        for engager in repo.list_post_engagers(user_id, post_id, limit or LINKEDIN_POST_EXISTING_LIMIT)
+    ]
+    if engagement_type:
+        normalized_type = engagement_type.strip().lower()
+        engagers = [engager for engager in engagers if normalized_type in engager.engagement_types]
+    if connection_degree:
+        normalized_degree = connection_degree.strip().lower()
+        engagers = [engager for engager in engagers if engager.connection_degree.strip().lower() == normalized_degree]
+    engagers.sort(key=lambda item: item.scraped_at, reverse=True)
+    return engagers[: limit or API_LIST_LIMIT]
+
+
+def list_linkedin_action_logs(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str | None = None,
+    action_type: str | None = None,
+    limit: int | None = None,
+) -> list[LinkedInActionLogResponse]:
+    require_user(repo, user_id)
+    logs = [_action_log_response(log) for log in repo.list_action_logs(user_id, limit or LINKEDIN_POST_EXISTING_LIMIT)]
+    if post_id:
+        logs = [log for log in logs if log.post_id == post_id]
+    if action_type:
+        logs = [log for log in logs if log.action_type == action_type]
+    logs.sort(key=lambda item: item.created_at, reverse=True)
+    return logs[: limit or API_LIST_LIMIT]
+
+
+def _target_engagers(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+    profile_urls: list[str],
+    engagement_types: list[str] | None = None,
+) -> list[PostEngagerResponse]:
+    if not repo.get_own_post(user_id, post_id):
+        raise KeyError(f"LinkedIn post not found: {post_id}")
+    selected_keys = {_engager_profile_key(value) for value in profile_urls if str(value).strip()}
+    allowed_types = {item.strip().lower() for item in engagement_types or [] if item.strip()}
+    engagers = [
+        _post_engager_response(engager)
+        for engager in repo.list_post_engagers(user_id, post_id, LINKEDIN_POST_EXISTING_LIMIT)
+    ]
+    if selected_keys:
+        engagers = [engager for engager in engagers if engager.profile_key in selected_keys]
+    if allowed_types:
+        engagers = [engager for engager in engagers if allowed_types.intersection(engager.engagement_types)]
+    return engagers
+
+
+def _is_first_degree(connection_degree: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", connection_degree.lower())
+    return normalized in {"1", "1st", "first"}
+
+
+def _has_prior_action(
+    repo: DynamoRepository,
+    user_id: str,
+    profile_key: str,
+    action_type: str,
+    post_id: str | None = None,
+) -> bool:
+    for log in repo.list_action_logs(user_id, LINKEDIN_POST_EXISTING_LIMIT):
+        if str(log.get("action_type")) != action_type:
+            continue
+        if str(log.get("profile_key")) != profile_key:
+            continue
+        if post_id and str(log.get("post_id")) != post_id:
+            continue
+        if str(log.get("status")) in {"queued", "running", "sent"}:
+            return True
+    return False
+
+
+def _write_action_log(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+    engager: PostEngagerResponse,
+    action_type: str,
+    requested_text: str,
+    status: str,
+    skip_reason: str = "",
+    error_message: str = "",
+    final_text: str = "",
+    started_at: str = "",
+    raw_metadata: dict[str, Any] | None = None,
+) -> LinkedInActionResult:
+    timestamp = now_iso()
+    key_fragment = hashlib.sha256(f"{engager.profile_key}#{action_type}#{timestamp}".encode("utf-8")).hexdigest()[:12]
+    action_id = f"{timestamp}#{action_type}#{key_fragment}"
+    log = {
+        "action_id": action_id,
+        "user_id": user_id,
+        "post_id": post_id,
+        "profile_url": engager.profile_url,
+        "profile_key": engager.profile_key,
+        "action_type": action_type,
+        "requested_text": requested_text,
+        "final_text": final_text,
+        "status": status,
+        "skip_reason": skip_reason,
+        "error_message": error_message,
+        "created_at": timestamp,
+        "started_at": started_at,
+        "finished_at": timestamp if status in {"sent", "skipped", "failed"} else "",
+        "raw_metadata": raw_metadata or {},
+    }
+    repo.put_action_log(log)
+    return LinkedInActionResult(
+        profile_url=engager.profile_url,
+        profile_key=engager.profile_key,
+        action_id=action_id,
+        action_type=action_type,
+        status=status,
+        skip_reason=skip_reason,
+        error_message=error_message,
+        final_text=final_text,
+    )
+
+
+def send_comment_replies(
+    repo: DynamoRepository,
+    request: CommentReplyActionRequest,
+) -> LinkedInActionBatchResponse:
+    require_user(repo, request.user_id)
+    post = repo.get_own_post(request.user_id, request.post_id)
+    if not post:
+        raise KeyError(f"LinkedIn post not found: {request.post_id}")
+    targets = _target_engagers(repo, request.user_id, request.post_id, request.profile_urls)
+    results: list[LinkedInActionResult] = []
+
+    for engager in targets:
+        if "comment" not in engager.engagement_types:
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "comment_reply",
+                    request.reply_text,
+                    "skipped",
+                    skip_reason="not_a_commenter",
+                )
+            )
+            continue
+        if _has_prior_action(repo, request.user_id, engager.profile_key, "comment_reply", post_id=request.post_id):
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "comment_reply",
+                    request.reply_text,
+                    "skipped",
+                    skip_reason="duplicate_comment_reply",
+                )
+            )
+            continue
+        if request.dry_run:
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "comment_reply",
+                    request.reply_text,
+                    "skipped",
+                    skip_reason="dry_run",
+                    final_text=request.reply_text,
+                )
+            )
+            continue
+
+        _sleep_before_playwright_launch(request.launch_delay_seconds)
+        started_at = now_iso()
+        action_result = reply_to_comment(
+            str(post.get("post_url", "")),
+            {
+                "comment_permalink": engager.comment_permalink,
+                "comment_urn": engager.comment_urn,
+                "comment_text": engager.comment_text,
+                "name": engager.name,
+            },
+            request.reply_text,
+        )
+        results.append(
+            _write_action_log(
+                repo,
+                request.user_id,
+                request.post_id,
+                engager,
+                "comment_reply",
+                request.reply_text,
+                "sent" if action_result.ok else "failed",
+                error_message=action_result.error_message,
+                final_text=action_result.final_text or request.reply_text,
+                started_at=started_at,
+                raw_metadata=action_result.raw_metadata,
+            )
+        )
+
+    return LinkedInActionBatchResponse(
+        user_id=request.user_id,
+        post_id=request.post_id,
+        action_type="comment_reply",
+        results=results,
+    )
+
+
+def send_connection_requests(
+    repo: DynamoRepository,
+    request: ConnectionRequestActionRequest,
+) -> LinkedInActionBatchResponse:
+    require_user(repo, request.user_id)
+    targets = _target_engagers(
+        repo,
+        request.user_id,
+        request.post_id,
+        request.profile_urls,
+        request.engagement_types,
+    )
+    results: list[LinkedInActionResult] = []
+
+    for engager in targets:
+        if not engager.profile_url:
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "connection_request",
+                    request.note,
+                    "skipped",
+                    skip_reason="missing_profile_url",
+                )
+            )
+            continue
+        if _is_first_degree(engager.connection_degree):
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "connection_request",
+                    request.note,
+                    "skipped",
+                    skip_reason="already_first_degree",
+                )
+            )
+            continue
+        if _has_prior_action(repo, request.user_id, engager.profile_key, "connection_request"):
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "connection_request",
+                    request.note,
+                    "skipped",
+                    skip_reason="duplicate_connection_request",
+                )
+            )
+            continue
+        if request.dry_run:
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "connection_request",
+                    request.note,
+                    "skipped",
+                    skip_reason="dry_run",
+                    final_text=request.note,
+                )
+            )
+            continue
+
+        _sleep_before_playwright_launch(request.launch_delay_seconds)
+        started_at = now_iso()
+        action_result = send_connection_request(engager.profile_url, request.note)
+        results.append(
+            _write_action_log(
+                repo,
+                request.user_id,
+                request.post_id,
+                engager,
+                "connection_request",
+                request.note,
+                "sent" if action_result.ok else "failed",
+                error_message=action_result.error_message,
+                final_text=action_result.final_text or request.note,
+                started_at=started_at,
+                raw_metadata=action_result.raw_metadata,
+            )
+        )
+
+    return LinkedInActionBatchResponse(
+        user_id=request.user_id,
+        post_id=request.post_id,
+        action_type="connection_request",
+        results=results,
+    )
+
+
+def send_dms(
+    repo: DynamoRepository,
+    request: DmActionRequest,
+) -> LinkedInActionBatchResponse:
+    require_user(repo, request.user_id)
+    targets = _target_engagers(repo, request.user_id, request.post_id, request.profile_urls)
+    results: list[LinkedInActionResult] = []
+
+    for engager in targets:
+        if not engager.profile_url:
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "dm",
+                    request.message,
+                    "skipped",
+                    skip_reason="missing_profile_url",
+                )
+            )
+            continue
+        if not _is_first_degree(engager.connection_degree):
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "dm",
+                    request.message,
+                    "skipped",
+                    skip_reason="not_first_degree",
+                )
+            )
+            continue
+        if _has_prior_action(repo, request.user_id, engager.profile_key, "dm"):
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "dm",
+                    request.message,
+                    "skipped",
+                    skip_reason="duplicate_dm",
+                )
+            )
+            continue
+        if request.dry_run:
+            results.append(
+                _write_action_log(
+                    repo,
+                    request.user_id,
+                    request.post_id,
+                    engager,
+                    "dm",
+                    request.message,
+                    "skipped",
+                    skip_reason="dry_run",
+                    final_text=request.message,
+                )
+            )
+            continue
+
+        _sleep_before_playwright_launch(request.launch_delay_seconds)
+        started_at = now_iso()
+        action_result = send_dm(engager.profile_url, request.message)
+        results.append(
+            _write_action_log(
+                repo,
+                request.user_id,
+                request.post_id,
+                engager,
+                "dm",
+                request.message,
+                "sent" if action_result.ok else "failed",
+                error_message=action_result.error_message,
+                final_text=action_result.final_text or request.message,
+                started_at=started_at,
+                raw_metadata=action_result.raw_metadata,
+            )
+        )
+
+    return LinkedInActionBatchResponse(
+        user_id=request.user_id,
+        post_id=request.post_id,
+        action_type="dm",
+        results=results,
+    )

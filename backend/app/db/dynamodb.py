@@ -69,6 +69,9 @@ class DynamoRepository:
         self.threads_table_name = f"{DYNAMODB_TABLE_PREFIX}_threads"
         self.creators_table_name = f"{DYNAMODB_TABLE_PREFIX}_creators"
         self.activities_table_name = f"{DYNAMODB_TABLE_PREFIX}_activities"
+        self.own_posts_table_name = f"{DYNAMODB_TABLE_PREFIX}_own_posts"
+        self.post_engagers_table_name = f"{DYNAMODB_TABLE_PREFIX}_post_engagers"
+        self.linkedin_action_logs_table_name = f"{DYNAMODB_TABLE_PREFIX}_linkedin_action_logs"
 
     def ensure_tables(self) -> None:
         if DYNAMODB_ENDPOINT_URL:
@@ -78,6 +81,9 @@ class DynamoRepository:
             (self.threads_table_name, "user_id", "thread_id"),
             (self.creators_table_name, "user_id", "creator_id"),
             (self.activities_table_name, "user_creator_id", "post_id"),
+            (self.own_posts_table_name, "user_id", "post_id"),
+            (self.post_engagers_table_name, "user_post_id", "profile_key"),
+            (self.linkedin_action_logs_table_name, "user_id", "action_id"),
         ):
             self._ensure_table(table_name, partition_key, sort_key)
 
@@ -222,6 +228,41 @@ class DynamoRepository:
             f"{user_id}#{creator_id}",
             limit,
         )
+
+    def put_own_post(self, post: dict[str, Any]) -> dict[str, Any]:
+        return self._put(self.own_posts_table_name, post)
+
+    def get_own_post(self, user_id: str, post_id: str) -> dict[str, Any] | None:
+        return self._get(self.own_posts_table_name, {"user_id": user_id, "post_id": post_id})
+
+    def list_own_posts(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._query(self.own_posts_table_name, "user_id", user_id, limit)
+
+    def put_post_engager(self, engager: dict[str, Any]) -> dict[str, Any]:
+        return self._put(self.post_engagers_table_name, engager)
+
+    def get_post_engager(self, user_id: str, post_id: str, profile_key: str) -> dict[str, Any] | None:
+        return self._get(
+            self.post_engagers_table_name,
+            {"user_post_id": f"{user_id}#{post_id}", "profile_key": profile_key},
+        )
+
+    def list_post_engagers(self, user_id: str, post_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._query(
+            self.post_engagers_table_name,
+            "user_post_id",
+            f"{user_id}#{post_id}",
+            limit,
+        )
+
+    def put_action_log(self, action_log: dict[str, Any]) -> dict[str, Any]:
+        return self._put(self.linkedin_action_logs_table_name, action_log)
+
+    def get_action_log(self, user_id: str, action_id: str) -> dict[str, Any] | None:
+        return self._get(self.linkedin_action_logs_table_name, {"user_id": user_id, "action_id": action_id})
+
+    def list_action_logs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._query(self.linkedin_action_logs_table_name, "user_id", user_id, limit)
 
 
 _repository: DynamoRepository | None = None
