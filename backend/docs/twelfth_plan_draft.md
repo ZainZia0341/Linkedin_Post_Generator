@@ -421,3 +421,55 @@ Suggested first-pass caps:
 - Action logs prevent duplicate outreach.
 - All action endpoints return per-profile sent/skipped/failed results.
 - FastAPI docs can exercise every backend workflow without frontend UI.
+
+
+
+
+
+
+=================================================================
+Done. Backend-only changes, no UI touched.
+Implemented from twelfth_plan_draft.md:
+Added own LinkedIn post tracking/sync APIs.
+Added post engagement scrape API for likes/comments.
+Added stored engagers model with one row per person per post.
+Added dry-run safe action APIs for:comment replies
+connection requests
+DMs to first-degree engagers
+
+Added action logs to prevent duplicate real connection requests/DMs.
+Added DynamoDB support for:*_own_posts
+*_post_engagers
+*_linkedin_action_logs
+
+New Swagger routes:
+POST /linkedin/posts/publish
+POST /linkedin/posts/sync-recent
+GET  /users/{user_id}/linkedin/posts
+POST /linkedin/posts/{post_id}/engagement/scrape
+GET  /linkedin/posts/{post_id}/engagers
+GET  /users/{user_id}/linkedin/action-logs
+POST /linkedin/actions/comment-replies
+POST /linkedin/actions/connection-requests
+POST /linkedin/actions/dms
+Key files changed:
+[main.py](D:/Linkedin_Post_Generator/backend/app/api/main.py)
+[schemas.py](D:/Linkedin_Post_Generator/backend/app/api/schemas.py)
+[services.py](D:/Linkedin_Post_Generator/backend/app/api/services.py)
+[dynamodb.py](D:/Linkedin_Post_Generator/backend/app/db/dynamodb.py)
+[linkedin_post_engagement.py](D:/Linkedin_Post_Generator/backend/app/linkedin_post_engagement.py)
+[linkedin_post_actions.py](D:/Linkedin_Post_Generator/backend/app/linkedin_post_actions.py)
+Validation passed:
+13 passed in 12.06s
+FastAPI import check also passed, and all new LinkedIn routes are visible. For testing actions, keep dry_run: true first. Real Playwright write actions need scraping enabled plus burner/authenticated LinkedIn session.
+
+Edited 7 files+2,117-148Review changesUndoReview
+
+backend/app/api/main.pybackend/app/api/main.py+200-56
+backend/app/api/schemas.pybackend/app/api/schemas.py+176-10
+backend/app/api/services.pybackend/app/api/services.py+822-30
+backend/app/db/dynamodb.pybackend/app/db/dynamodb.py+57-16
+backend/app/linkedin_post_actions.pybackend/app/linkedin_post_actions.py+256-0
+backend/app/linkedin_post_engagement.pybackend/app/linkedin_post_engagement.py+367-0
+backend/test/test_scripts/test_fastapi_services.pybackend/test/test_scripts/test_fastapi_services.py+239-36
+Collapse files
