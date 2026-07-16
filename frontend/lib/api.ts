@@ -10,6 +10,8 @@ import type {
   RecentActivitiesResponse,
   RecentScrapeCreatorsResponse,
   ScrapeCreatorProfilesResponse,
+  ScrapeJobStartResponse,
+  ScrapeJobStatusResponse,
   ThreadResponse,
   ThreadSummary,
   UserDataResponse,
@@ -18,6 +20,7 @@ import type {
 export const DEFAULT_USER_ID = process.env.NEXT_PUBLIC_DEFAULT_USER_ID || "test-user-1";
 export const ENABLE_SCRAPING = process.env.NEXT_PUBLIC_ENABLE_SCRAPING !== "false";
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+const SCRAPE_JOB_POLL_INTERVAL_MS = 3 * 60 * 1000;
 
 type CacheEntry<T> = {
   data?: T;
@@ -245,28 +248,68 @@ export function runRecentScrape(payload: {
   max_posts?: number;
   window_hours?: number;
   launch_delay_seconds?: number;
-}) {
-  return apiFetch<RecentScrapeCreatorsResponse>("/creators/scrape/recent-24h", {
+}, onStatus?: (status: ScrapeJobStatusResponse) => void) {
+  return apiFetch<ScrapeJobStartResponse>("/scrape-jobs/creators/recent-24h", {
     method: "POST",
     body: JSON.stringify(payload),
-  }).then((result) => {
+  }).then((job) => pollScrapeJobUntilDone(job.job_id, onStatus))
+    .then((status) => {
+      if (status.status === "failed") {
+        throw new Error(status.message || status.errors[0]?.message || "Scraping failed.");
+      }
+      return status.result as RecentScrapeCreatorsResponse;
+    })
+    .then((result) => {
     clearUserWorkflowCache(payload.user_id);
     return result;
   });
 }
 
-export function scrapeCreatorProfiles(userId: string, creatorIds?: string[], launchDelaySeconds = 3) {
-  return apiFetch<ScrapeCreatorProfilesResponse>("/creators/profile-details/scrape", {
+export function scrapeCreatorProfiles(
+  userId: string,
+  creatorIds?: string[],
+  launchDelaySeconds = 3,
+  onStatus?: (status: ScrapeJobStatusResponse) => void,
+) {
+  return apiFetch<ScrapeJobStartResponse>("/scrape-jobs/creators/profile-details", {
     method: "POST",
     body: JSON.stringify({
       user_id: userId,
       creator_ids: creatorIds,
       launch_delay_seconds: launchDelaySeconds,
     }),
-  }).then((result) => {
+  }).then((job) => pollScrapeJobUntilDone(job.job_id, onStatus))
+    .then((status) => {
+      if (status.status === "failed") {
+        throw new Error(status.message || status.errors[0]?.message || "Profile scraping failed.");
+      }
+      return status.result as ScrapeCreatorProfilesResponse;
+    })
+    .then((result) => {
     clearUserWorkflowCache(userId);
     return result;
   });
+}
+
+export function fetchScrapeJobStatus(jobId: string) {
+  return apiFetch<ScrapeJobStatusResponse>(`/scrape-jobs/${encodeURIComponent(jobId)}`);
+}
+
+function isTerminalScrapeJob(status: ScrapeJobStatusResponse) {
+  return status.status === "succeeded" || status.status === "failed";
+}
+
+async function pollScrapeJobUntilDone(
+  jobId: string,
+  onStatus?: (status: ScrapeJobStatusResponse) => void,
+  intervalMs = SCRAPE_JOB_POLL_INTERVAL_MS,
+): Promise<ScrapeJobStatusResponse> {
+  for (;;) {
+    const status = await fetchScrapeJobStatus(jobId);
+    onStatus?.(status);
+    if (isTerminalScrapeJob(status)) return status;
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+  }
 }
 
 export function generateFromCreatorActivity(payload: {

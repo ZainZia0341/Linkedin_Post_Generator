@@ -4,7 +4,12 @@ import { Check, Loader2, Minus, Plus, Search, UserCheck, Users, X, Zap } from "l
 import { useMemo, useState } from "react";
 import { DEFAULT_USER_ID, ENABLE_SCRAPING, runRecentScrape } from "@/lib/api";
 import { initials } from "@/lib/format";
-import type { CreatorProfileDetailsResponse, CreatorResponse, RecentScrapeCreatorsResponse } from "@/lib/types";
+import type {
+  CreatorProfileDetailsResponse,
+  CreatorResponse,
+  RecentScrapeCreatorsResponse,
+  ScrapeJobStatusResponse,
+} from "@/lib/types";
 
 type Scope = "all" | "selected";
 
@@ -39,6 +44,7 @@ export function RunScrapingDialog({
   const [maxPosts, setMaxPosts] = useState(5);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [jobStatus, setJobStatus] = useState<ScrapeJobStatusResponse | null>(null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const filteredCreators = useMemo(() => {
@@ -74,6 +80,7 @@ export function RunScrapingDialog({
     if (!canRun) return;
     setBusy(true);
     setError("");
+    setJobStatus(null);
     try {
       const response = await runRecentScrape({
         user_id: DEFAULT_USER_ID,
@@ -81,7 +88,7 @@ export function RunScrapingDialog({
         max_posts: maxPosts,
         window_hours: windowHours,
         launch_delay_seconds: 3,
-      });
+      }, setJobStatus);
       if (response.errors.length) {
         const firstError = response.errors[0];
         throw new Error(firstError.message || "Scraping completed with errors.");
@@ -259,6 +266,31 @@ export function RunScrapingDialog({
           </div>
 
           {error ? <div className="error-banner">{error}</div> : null}
+          {jobStatus ? (
+            <div className="scrape-progress-card">
+              <div>
+                <strong>{jobStatus.status === "succeeded" ? "Scrape complete" : "Scrape job running"}</strong>
+                <span>{jobStatus.message || "Waiting for backend progress..."}</span>
+              </div>
+              <div className="scrape-progress-grid">
+                <div>
+                  <span>Creators</span>
+                  <strong>{Math.min(jobStatus.scraped_creators, jobStatus.total_creators)} / {jobStatus.total_creators}</strong>
+                </div>
+                <div>
+                  <span>Posts found</span>
+                  <strong>{jobStatus.total_posts}</strong>
+                </div>
+                <div>
+                  <span>Errors</span>
+                  <strong>{jobStatus.errors.length}</strong>
+                </div>
+              </div>
+              {jobStatus.errors[0]?.message ? (
+                <p>{jobStatus.errors[0].creator_id ? `${jobStatus.errors[0].creator_id}: ` : ""}{jobStatus.errors[0].message}</p>
+              ) : null}
+            </div>
+          ) : null}
           {!ENABLE_SCRAPING ? (
             <div className="error-banner">Scraping is disabled for this deployed frontend. Run scraping locally.</div>
           ) : null}

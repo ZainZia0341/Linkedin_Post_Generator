@@ -18,6 +18,7 @@ from app.api.schemas import (
     RecentScrapeCreatorsRequest,
     ScrapePostEngagementRequest,
     ScrapeCreatorsRequest,
+    SyncRecentOwnPostsRequest,
 )
 from app.api.services import (
     create_creator,
@@ -37,6 +38,7 @@ from app.api.services import (
     send_comment_replies,
     send_connection_requests,
     send_dms,
+    sync_recent_linkedin_posts,
     track_published_linkedin_post,
 )
 import app.api.services as services
@@ -49,9 +51,6 @@ class MemoryRepo:
         self.threads: dict[tuple[str, str], dict] = {}
         self.creators: dict[tuple[str, str], dict] = {}
         self.activities: dict[tuple[str, str, str], dict] = {}
-        self.own_posts: dict[tuple[str, str], dict] = {}
-        self.post_engagers: dict[tuple[str, str], dict] = {}
-        self.action_logs: dict[tuple[str, str], dict] = {}
 
     def get_user(self, user_id: str):
         return self.users.get(user_id)
@@ -99,45 +98,6 @@ class MemoryRepo:
             if stored_user_id == user_id and stored_creator_id == creator_id
         ]
         return activities[: limit or 10]
-
-    def put_own_post(self, post: dict):
-        self.own_posts[(post["user_id"], post["post_id"])] = dict(post)
-        return self.own_posts[(post["user_id"], post["post_id"])]
-
-    def get_own_post(self, user_id: str, post_id: str):
-        return self.own_posts.get((user_id, post_id))
-
-    def list_own_posts(self, user_id: str, limit: int | None = None):
-        posts = [post for (stored_user_id, _), post in self.own_posts.items() if stored_user_id == user_id]
-        return posts[: limit or 10]
-
-    def put_post_engager(self, engager: dict):
-        key = (engager["user_post_id"], engager["profile_key"])
-        self.post_engagers[key] = dict(engager)
-        return self.post_engagers[key]
-
-    def get_post_engager(self, user_id: str, post_id: str, profile_key: str):
-        return self.post_engagers.get((f"{user_id}#{post_id}", profile_key))
-
-    def list_post_engagers(self, user_id: str, post_id: str, limit: int | None = None):
-        user_post_id = f"{user_id}#{post_id}"
-        engagers = [
-            engager
-            for (stored_user_post_id, _), engager in self.post_engagers.items()
-            if stored_user_post_id == user_post_id
-        ]
-        return engagers[: limit or 10]
-
-    def put_action_log(self, action_log: dict):
-        self.action_logs[(action_log["user_id"], action_log["action_id"])] = dict(action_log)
-        return self.action_logs[(action_log["user_id"], action_log["action_id"])]
-
-    def get_action_log(self, user_id: str, action_id: str):
-        return self.action_logs.get((user_id, action_id))
-
-    def list_action_logs(self, user_id: str, limit: int | None = None):
-        logs = [log for (stored_user_id, _), log in self.action_logs.items() if stored_user_id == user_id]
-        return logs[: limit or 10]
 
 
 def test_api_service_generate_and_modify_offline() -> None:
@@ -469,6 +429,42 @@ def test_recent_24h_scrape_returns_seen_posts_again_and_filters_old(monkeypatch)
     stored_seen = repo.get_activity("test-user-1", "recent-person", "urn:li:activity:recent-seen")
     assert stored_seen["engagement"]["comment"]["commented"] is True
     assert stored_seen["raw_text"] == "Updated scrape text for the same recent creator post."
+    dashboard_stats = repo.get_user("test-user-1")["dashboard_stats"]
+    assert dashboard_stats["new_posts_from_last_scrape_count"] == 2
+    assert dashboard_stats["total_scraped_posts_count"] == 2
+
+    scrape_creators_recent_24h(
+        repo,
+        RecentScrapeCreatorsRequest(
+            user_id="test-user-1",
+            creator_ids=["recent-person"],
+            max_posts=3,
+            window_hours=24,
+        ),
+    )
+    dashboard_stats = repo.get_user("test-user-1")["dashboard_stats"]
+    assert dashboard_stats["new_posts_from_last_scrape_count"] == 2
+    assert dashboard_stats["total_scraped_posts_count"] == 2
+
+
+def test_dashboard_stats_preserve_cumulative_and_latest_scrape_counts() -> None:
+    stats = services.build_dashboard_stats(
+        creators=[
+            {"added_at": services.now_iso(), "new_count": 3},
+            {"added_at": "2020-01-01T00:00:00+00:00", "new_count": 4},
+        ],
+        threads=[],
+        activities=[],
+        existing_stats={
+            "total_scraped_posts_count": 55,
+            "new_posts_from_last_scrape_count": 11,
+        },
+    )
+
+    assert stats.total_scraped_posts_count == 55
+    assert stats.new_posts_from_last_scrape_count == 11
+    assert stats.recently_added_count == 1
+    assert stats.recently_added_window_days == 1
 
 
 def test_track_and_list_own_linkedin_posts() -> None:
@@ -547,6 +543,107 @@ def test_post_engagement_scrape_merges_liker_and_commenter(monkeypatch) -> None:
     assert engagers[0].comment_text == "Useful point."
 
 
+def test_post_engagement_scrape_uses_direct_post_url(monkeypatch) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {}, None)
+    track_published_linkedin_post(
+        repo,
+        LinkedInPostPublishRequest(
+            user_id="test-user-1",
+            post_text="A post whose saved URL points to analytics.",
+            post_url="https://www.linkedin.com/analytics/post-summary/urn:li:activity:556/",
+        ),
+    )
+    captured: dict[str, str] = {}
+
+    def fake_scrape(post_url: str, **_kwargs):
+        captured["post_url"] = post_url
+        return SimpleNamespace(
+            engagers=[],
+            like_count=0,
+            comment_count=0,
+            warnings=[],
+            errors=[],
+            diagnostics={},
+        )
+
+    monkeypatch.setattr(services, "scrape_linkedin_post_engagement", fake_scrape)
+    response = scrape_linkedin_post_engagement_service(
+        repo,
+        "urn:li:activity:556",
+        ScrapePostEngagementRequest(user_id="test-user-1", launch_delay_seconds=0),
+    )
+
+    assert response.errors == []
+    assert captured["post_url"] == "https://www.linkedin.com/feed/update/urn:li:activity:556/"
+
+
+def test_sync_recent_linkedin_posts_reports_skipped_candidates(monkeypatch) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"linkedin_url": "https://www.linkedin.com/in/test-user/"}, None)
+    monkeypatch.setattr(services, "_sleep_before_playwright_launch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "fetch_recent_profile_posts",
+        lambda *_args, **_kwargs: [
+            {
+                "post_id": "urn:li:activity:1001",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:1001/",
+                "raw_text": "Fresh visible post, but LinkedIn did not expose a readable timestamp.",
+                "posted_at_text": "",
+                "fetched_at": services.now_iso(),
+            },
+            {
+                "post_id": "urn:li:activity:1002",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:1002/",
+                "raw_text": "Older visible post that should stay outside the requested window.",
+                "posted_at_text": "4d",
+                "fetched_at": services.now_iso(),
+            },
+        ],
+    )
+
+    response = sync_recent_linkedin_posts(
+        repo,
+        SyncRecentOwnPostsRequest(user_id="test-user-1", window_hours=72, launch_delay_seconds=0),
+    )
+
+    assert response.checked_count == 2
+    assert response.saved_count == 0
+    assert response.skipped_count == 2
+    assert "unparseable_posted_at_text" in response.skipped_posts[0]["reason"]
+    assert response.skipped_posts[1]["reason"] == "outside_72_hour_window"
+
+
+def test_sync_recent_linkedin_posts_saves_fresh_parseable_candidate(monkeypatch) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"linkedin_url": "https://www.linkedin.com/in/test-user/"}, None)
+    monkeypatch.setattr(services, "_sleep_before_playwright_launch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        services,
+        "fetch_recent_profile_posts",
+        lambda *_args, **_kwargs: [
+            {
+                "post_id": "urn:li:activity:1003",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:1003/",
+                "raw_text": "A brand new post that should be tracked by the own-post sync endpoint.",
+                "posted_at_text": "3m",
+                "fetched_at": services.now_iso(),
+            }
+        ],
+    )
+
+    response = sync_recent_linkedin_posts(
+        repo,
+        SyncRecentOwnPostsRequest(user_id="test-user-1", window_hours=72, launch_delay_seconds=0),
+    )
+
+    assert response.checked_count == 1
+    assert response.saved_count == 1
+    assert response.skipped_count == 0
+    assert response.posts[0].post_id == "urn:li:activity:1003"
+
+
 def test_linkedin_engager_actions_are_dry_run_and_role_filtered() -> None:
     repo = MemoryRepo()
     create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
@@ -558,7 +655,7 @@ def test_linkedin_engager_actions_are_dry_run_and_role_filtered() -> None:
             post_url="https://www.linkedin.com/feed/update/urn:li:activity:777/",
         ),
     )
-    post = repo.get_own_post("test-user-1", "urn:li:activity:777")
+    post = services._get_own_post_record(repo, "test-user-1", "urn:li:activity:777")
     services._merge_engager_record(
         repo,
         post,
@@ -617,3 +714,17 @@ def test_linkedin_engager_actions_are_dry_run_and_role_filtered() -> None:
         ),
     )
     assert {result.skip_reason for result in dms.results} == {"dry_run", "not_first_degree"}
+
+    explicit_dm = send_dms(
+        repo,
+        DmActionRequest(
+            user_id="test-user-1",
+            post_id="urn:li:activity:777",
+            profile_urls=["https://www.linkedin.com/in/explicit-first-degree/"],
+            message="Thanks for connecting.",
+            dry_run=True,
+            launch_delay_seconds=0,
+        ),
+    )
+    assert len(explicit_dm.results) == 1
+    assert explicit_dm.results[0].skip_reason == "dry_run"

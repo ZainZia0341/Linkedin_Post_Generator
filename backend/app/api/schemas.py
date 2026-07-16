@@ -234,7 +234,9 @@ class SyncRecentOwnPostsResponse(BaseModel):
     user_id: str
     checked_count: int = 0
     saved_count: int = 0
+    skipped_count: int = 0
     posts: list[OwnPostResponse] = Field(default_factory=list)
+    skipped_posts: list[dict[str, str]] = Field(default_factory=list)
     errors: list[dict[str, str]] = Field(default_factory=list)
 
 
@@ -396,10 +398,40 @@ class ScrapeCreatorProfilesResponse(BaseModel):
     errors: list[dict[str, str]] = Field(default_factory=list)
 
 
+class ScrapeJobStartResponse(BaseModel):
+    job_id: str
+    job_type: str
+    user_id: str
+    status: str = "queued"
+    status_url: str
+    total_creators: int = 0
+    created_at: str = ""
+
+
+class ScrapeJobStatusResponse(BaseModel):
+    job_id: str
+    job_type: str
+    user_id: str
+    status: str
+    created_at: str = ""
+    started_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
+    total_creators: int = 0
+    scraped_creators: int = 0
+    total_posts: int = 0
+    scraped_profiles: int = 0
+    current_creator_id: str = ""
+    message: str = ""
+    errors: list[dict[str, str]] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
 class DashboardStatsResponse(BaseModel):
     creator_count: int = 0
     thread_count: int = 0
     activity_count: int = 0
+    total_scraped_posts_count: int = 0
     new_posts_today_count: int = 0
     new_posts_from_last_scrape_count: int = 0
     needs_scraping_count: int = 0

@@ -59,6 +59,7 @@ export type DashboardStats = {
   creator_count: number;
   thread_count: number;
   activity_count: number;
+  total_scraped_posts_count: number;
   new_posts_today_count: number;
   new_posts_from_last_scrape_count: number;
   needs_scraping_count: number;
@@ -179,6 +180,38 @@ export type ScrapeCreatorProfilesResponse = {
     creator_id?: string;
     message?: string;
   }>;
+};
+
+export type ScrapeJobStartResponse = {
+  job_id: string;
+  job_type: string;
+  user_id: string;
+  status: string;
+  status_url: string;
+  total_creators: number;
+  created_at: string;
+};
+
+export type ScrapeJobStatusResponse = {
+  job_id: string;
+  job_type: string;
+  user_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  created_at: string;
+  started_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+  total_creators: number;
+  scraped_creators: number;
+  total_posts: number;
+  scraped_profiles: number;
+  current_creator_id?: string;
+  message?: string;
+  errors: Array<{
+    creator_id?: string;
+    message?: string;
+  }>;
+  result: Record<string, unknown>;
 };
 
 export type CommentResponse = {

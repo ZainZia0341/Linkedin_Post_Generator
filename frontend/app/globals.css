@@ -1114,11 +1114,11 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 9px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 850;
-  white-space: nowrap;
 }
 
 .creator-row-actions {
@@ -2039,6 +2039,8 @@ a {
   color: var(--text);
   font-size: 13px;
   line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .experience-row em {
@@ -2054,6 +2056,8 @@ a {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .creator-detail-side {
@@ -2300,6 +2304,15 @@ a {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.scraped-post-card:hover,
+.scraped-post-card:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  outline: none;
 }
 
 .scraped-post-card.muted {
@@ -2340,9 +2353,13 @@ a {
 }
 
 .post-author small {
+  display: -webkit-box;
   margin-top: 2px;
+  overflow: hidden;
   color: var(--muted);
   font-size: 11px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .post-card-flags {
@@ -2363,7 +2380,6 @@ a {
   border-radius: 8px;
   background: var(--surface);
   color: #273247;
-  cursor: pointer;
   padding: 13px 14px;
   text-align: left;
   line-height: 1.55;
@@ -2388,6 +2404,10 @@ a {
   margin-left: auto;
 }
 
+.post-open-link {
+  min-width: 96px;
+}
+
 .posts-pagination {
   display: flex;
   align-items: center;
@@ -2409,7 +2429,7 @@ a {
   right: 0;
   display: flex;
   flex-direction: column;
-  width: min(430px, 100vw);
+  width: min(680px, 100vw);
   height: 100%;
   background: var(--surface);
   box-shadow: -20px 0 70px rgba(15, 23, 42, 0.2);
@@ -2817,6 +2837,78 @@ a {
   border-radius: 8px;
   background: #eef4ff;
   padding: 18px;
+}
+
+.post-detail-creator-card .post-author {
+  align-items: flex-start;
+}
+
+.post-detail-creator-card .post-author small {
+  display: block;
+  overflow: visible;
+  -webkit-box-orient: initial;
+  -webkit-line-clamp: initial;
+}
+
+.scrape-progress-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  border: 1px solid #cfd8f2;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 16px;
+}
+
+.scrape-progress-card.compact-progress {
+  margin-top: 12px;
+}
+
+.scrape-progress-card strong,
+.scrape-progress-card span {
+  display: block;
+}
+
+.scrape-progress-card > div:first-child strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.scrape-progress-card > div:first-child span,
+.scrape-progress-card p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scrape-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scrape-progress-grid > div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px 10px;
+}
+
+.scrape-progress-grid span,
+.scrape-progress-grid strong {
+  font-size: 12px;
+}
+
+.scrape-progress-grid span {
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.scrape-progress-grid strong {
+  margin-top: 3px;
+  color: var(--text);
+  font-weight: 900;
 }
 
 .scrape-summary-title {

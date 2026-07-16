@@ -110,7 +110,6 @@ export function PostsScrapingView() {
     });
   }, [activities, creatorById, creatorFilter, profileMap, query, sortOrder, timeBucket]);
   const visiblePosts = filteredActivities;
-  const newPosts = filteredActivities.filter(isFetchedWithinLastDay);
   const totalPages = Math.max(1, Math.ceil(visiblePosts.length / POSTS_PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pageStart = visiblePosts.length ? (safePage - 1) * POSTS_PAGE_SIZE : 0;
@@ -121,8 +120,8 @@ export function PostsScrapingView() {
     .filter(Boolean)
     .sort((left, right) => new Date(right || "").getTime() - new Date(left || "").getTime())[0];
   const metrics = {
-    total: activities.length,
-    newPosts: newPosts.length,
+    total: userData?.dashboard_stats.total_scraped_posts_count ?? activities.length,
+    latestScrapePosts: userData?.dashboard_stats.new_posts_from_last_scrape_count ?? 0,
     lastScrape: lastScrapeAt ? compactDate(lastScrapeAt) : "No scrape",
   };
 
@@ -151,7 +150,7 @@ export function PostsScrapingView() {
 
         <div className="posts-metric-grid">
           <PostsMetric label="Total Scraped Posts" value={metrics.total.toLocaleString()} />
-          <PostsMetric label="New Posts" value={metrics.newPosts.toLocaleString()} />
+          <PostsMetric label="Posts From Last Scrape" value={metrics.latestScrapePosts.toLocaleString()} />
           <PostsMetric label="Last Scraping" value={metrics.lastScrape} />
         </div>
 
@@ -169,10 +168,10 @@ export function PostsScrapingView() {
             ))}
           </select>
           <select value={timeBucket} onChange={(event) => setTimeBucket(event.target.value as TimeBucket)} aria-label="Time window filter">
-            <option value="last_12h">Last 12 Hours</option>
-            <option value="day_1">Last Day</option>
-            <option value="day_2">Last 2 Days</option>
-            <option value="day_3">Last 3 Days</option>
+            <option value="last_12h">Last 12 h</option>
+            <option value="day_1">Last 24 h</option>
+            <option value="day_2">24-48 h</option>
+            <option value="day_3">48-72 h</option>
           </select>
           <select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")} aria-label="Sort filter">
             <option value="newest">Newest First</option>
@@ -285,13 +284,25 @@ function ScrapedPostCard({
   const name = profile?.name || activity.author_name || creator?.display_name || activityTitle(activity);
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
   const isNew = isFetchedWithinLastDay(activity);
+  const postUrl = directPostUrl(activity);
 
   async function copyPostText() {
     await navigator.clipboard.writeText(activity.raw_text);
   }
 
   return (
-    <article className={muted ? "scraped-post-card muted" : "scraped-post-card"}>
+    <article
+      className={muted ? "scraped-post-card muted" : "scraped-post-card"}
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenDetails(activity)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenDetails(activity);
+        }
+      }}
+    >
       <header className="post-card-header">
         <div className="post-author">
           <div className="avatar mini">
@@ -312,16 +323,22 @@ function ScrapedPostCard({
           </span>
         </div>
       </header>
-      <button className="post-card-body" type="button" onClick={() => onOpenDetails(activity)}>
+      <div className="post-card-body">
         "{previewText(activity.raw_text, 250)}"
-      </button>
+      </div>
       <div className="post-card-meta">
         <span>Fetched {compactDate(activity.fetched_at)}</span>
       </div>
-      <footer className="post-card-actions">
+      <footer className="post-card-actions" onClick={(event) => event.stopPropagation()}>
         <button className="icon-button tiny copy-post-button" type="button" onClick={() => void copyPostText()} aria-label="Copy post text">
           <Copy size={15} />
         </button>
+        {postUrl ? (
+          <a className="secondary-button compact post-open-link" href={postUrl} target="_blank" rel="noreferrer">
+            <ExternalLink size={14} />
+            Open post
+          </a>
+        ) : null}
         <button className="text-button" type="button" onClick={() => onOpenDetails(activity)}>
           View Details
         </button>
@@ -343,6 +360,7 @@ function ScrapedPostDetailsDrawer({
 }) {
   const name = profile?.name || activity.author_name || creator?.display_name || activity.creator_id;
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
+  const postUrl = directPostUrl(activity);
 
   async function copyText(value: string) {
     await navigator.clipboard.writeText(value);
@@ -408,16 +426,16 @@ function ScrapedPostDetailsDrawer({
             <button
               className="secondary-button compact"
               type="button"
-              onClick={() => void copyText(activity.post_url || "")}
-              disabled={!activity.post_url}
+              onClick={() => void copyText(postUrl)}
+              disabled={!postUrl}
             >
               <Copy size={15} />
               Copy Post URL
             </button>
-            {activity.post_url ? (
-              <a className="secondary-button compact" href={activity.post_url} target="_blank" rel="noreferrer">
+            {postUrl ? (
+              <a className="secondary-button compact" href={postUrl} target="_blank" rel="noreferrer">
                 <ExternalLink size={15} />
-                Open LinkedIn
+                Open post
               </a>
             ) : null}
             <button className="danger-button compact" type="button" disabled title="Backend delete endpoint needed">
@@ -458,4 +476,11 @@ function isFetchedWithinLastDay(activity: ActivityResponse) {
   const time = new Date(activity.fetched_at).getTime();
   if (Number.isNaN(time)) return false;
   return Date.now() - time <= 24 * 60 * 60 * 1000;
+}
+
+function directPostUrl(activity: ActivityResponse) {
+  if (activity.post_id.startsWith("urn:li:activity:")) {
+    return `https://www.linkedin.com/feed/update/${activity.post_id}/`;
+  }
+  return activity.post_url || "";
 }

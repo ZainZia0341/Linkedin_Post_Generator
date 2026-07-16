@@ -2,8 +2,6 @@
 
 import Link from "next/link";
 import {
-  ArrowDown,
-  ArrowUp,
   CheckCircle2,
   Copy,
   ExternalLink,
@@ -12,6 +10,7 @@ import {
   Info,
   Loader2,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   UploadCloud,
@@ -35,17 +34,18 @@ import {
   scrapeCreatorProfiles,
 } from "@/lib/api";
 import { compactDate, displayName, initials, sortThreads } from "@/lib/format";
+import { formatExperienceForClipboard } from "@/lib/profileExperience";
 import type {
   BulkCreatorImportResponse,
   BulkCreatorPreviewResponse,
   CreatorProfileDetailsResponse,
   CreatorResponse,
+  ScrapeJobStatusResponse,
   UserDataResponse,
 } from "@/lib/types";
 
 type ModalMode = "single" | "bulk" | null;
-type LastCheckedSort = "desc" | "asc";
-type CreatorSortBy = "recently_added" | "last_checked_desc" | "last_checked_asc" | "name_asc" | "new_posts_desc";
+type CreatorViewMode = "all" | "recently_added" | "new_posts" | "profile_never_scraped" | "name_asc";
 const PAGE_SIZE = 10;
 
 export function CreatorsView() {
@@ -55,13 +55,14 @@ export function CreatorsView() {
     return new Map((cachedProfiles ?? []).map((profile) => [profile.creator_id, profile]));
   });
   const [query, setQuery] = useState("");
-  const [lastCheckedSort, setLastCheckedSort] = useState<LastCheckedSort>("desc");
-  const [sortBy, setSortBy] = useState<CreatorSortBy>("recently_added");
+  const [viewMode, setViewMode] = useState<CreatorViewMode>("all");
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [loading, setLoading] = useState(() => !getCachedUserData(DEFAULT_USER_ID));
   const [deletingCreatorIds, setDeletingCreatorIds] = useState<Set<string>>(new Set());
+  const [scrapingCreatorIds, setScrapingCreatorIds] = useState<Set<string>>(new Set());
+  const [profileJobStatus, setProfileJobStatus] = useState<ScrapeJobStatusResponse | null>(null);
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
@@ -96,26 +97,33 @@ export function CreatorsView() {
 
   useEffect(() => {
     setPage(1);
-  }, [query, sortBy]);
+  }, [query, viewMode]);
 
   const creators = userData?.creators ?? [];
+  const stats = userData?.dashboard_stats;
+  const recentlyAddedTodayCount = creators.filter((creator) => isToday(creator.added_at)).length;
   const sortedThreads = useMemo(() => sortThreads(userData?.threads ?? []), [userData?.threads]);
   const userName = displayName(userData?.user) || DEFAULT_USER_ID;
   const filteredCreators = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return creators.filter((creator) => {
-      const profile = profileMap.get(creator.creator_id);
-      const text = [
-        safeProfileName(profile, creator),
-        safeProfileHeadline(profile, creator),
-        creator.display_name,
-        creator.creator_id,
-        creator.profile_url,
-      ].join(" ").toLowerCase();
-      const matchesQuery = !normalized || text.includes(normalized);
-      return matchesQuery;
-    }).sort((left, right) => compareCreators(left, right, sortBy, profileMap));
-  }, [creators, profileMap, query, sortBy]);
+    return creators
+      .filter((creator) => {
+        const profile = profileMap.get(creator.creator_id);
+        const text = [
+          safeProfileName(profile, creator),
+          safeProfileHeadline(profile, creator),
+          creator.display_name,
+          creator.creator_id,
+          creator.profile_url,
+        ].join(" ").toLowerCase();
+        if (normalized && !text.includes(normalized)) return false;
+        if (viewMode === "new_posts") return (creator.new_count ?? 0) > 0;
+        if (viewMode === "profile_never_scraped") return !profile?.fetched_at;
+        if (viewMode === "recently_added") return isToday(creator.added_at);
+        return true;
+      })
+      .sort((left, right) => compareCreators(left, right, viewMode, profileMap));
+  }, [creators, profileMap, query, viewMode]);
   const totalPages = Math.max(1, Math.ceil(filteredCreators.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pageStart = filteredCreators.length ? (safePage - 1) * PAGE_SIZE : 0;
@@ -125,8 +133,6 @@ export function CreatorsView() {
   const allVisibleSelected = visibleCreatorIds.length > 0 && visibleCreatorIds.every((creatorId) => selectedCreatorIds.has(creatorId));
   const someVisibleSelected = visibleCreatorIds.some((creatorId) => selectedCreatorIds.has(creatorId));
   const selectedCreators = creators.filter((creator) => selectedCreatorIds.has(creator.creator_id));
-
-  const stats = userData?.dashboard_stats;
 
   function toggleVisibleCreators() {
     setSelectedCreatorIds((current) => {
@@ -152,23 +158,21 @@ export function CreatorsView() {
     });
   }
 
-  function changeCreatorSort(nextSort: CreatorSortBy) {
-    setSortBy(nextSort);
-    if (nextSort === "last_checked_desc") setLastCheckedSort("desc");
-    if (nextSort === "last_checked_asc") setLastCheckedSort("asc");
-  }
-
   async function copyCreatorProfile(creator: CreatorResponse) {
-    await navigator.clipboard.writeText(formatCreatorForClipboard(creator, profileMap.get(creator.creator_id)));
+    const content = formatCreatorForClipboard(creator, profileMap.get(creator.creator_id));
+    await writeRichClipboard(content.text, content.html);
     showSuccess("Creator profile copied");
   }
 
   async function copySelectedProfiles() {
     if (!selectedCreators.length) return;
-    const text = selectedCreators
-      .map((creator, index) => formatCreatorForClipboard(creator, profileMap.get(creator.creator_id), index + 1))
-      .join("\n\n");
-    await navigator.clipboard.writeText(text);
+    const contents = selectedCreators.map((creator, index) => (
+      formatCreatorForClipboard(creator, profileMap.get(creator.creator_id), index + 1)
+    ));
+    await writeRichClipboard(
+      contents.map((content) => content.text).join("\n\n"),
+      contents.map((content) => content.html).join("<hr />"),
+    );
     showSuccess(`${selectedCreators.length} creator profile${selectedCreators.length === 1 ? "" : "s"} copied`);
   }
 
@@ -230,6 +234,33 @@ export function CreatorsView() {
     setDeletingCreatorIds(new Set());
   }
 
+  async function scrapeProfiles(creatorIds: string[]) {
+    const uniqueCreatorIds = Array.from(new Set(creatorIds)).filter(Boolean);
+    if (!uniqueCreatorIds.length || scrapingCreatorIds.size > 0) return;
+    setScrapingCreatorIds(new Set(uniqueCreatorIds));
+    setProfileJobStatus(null);
+    setError("");
+    try {
+      const result = await scrapeCreatorProfiles(
+        DEFAULT_USER_ID,
+        uniqueCreatorIds,
+        3,
+        setProfileJobStatus,
+      );
+      if (result.errors.length) {
+        throw new Error(result.errors[0]?.message || "Profile scraping completed with errors.");
+      }
+      await load();
+      showSuccess(
+        `${result.profiles.length} profile${result.profiles.length === 1 ? "" : "s"} scraped`,
+      );
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "Could not scrape creator profiles.");
+    } finally {
+      setScrapingCreatorIds(new Set());
+    }
+  }
+
   return (
     <AppShell
       active="creators"
@@ -254,8 +285,8 @@ export function CreatorsView() {
 
       <section className="creator-metric-grid">
         <CreatorMetric icon={<Users size={20} />} label="Total Creators" value={(stats?.creator_count ?? 0).toString()} />
-        <CreatorMetric icon={<FileText size={20} />} label="New post (last 24 h)" value={(stats?.new_posts_today_count ?? 0).toString()} />
-        <CreatorMetric icon={<Plus size={20} />} label="Recently Added" value={(stats?.recently_added_count ?? 0).toString()} />
+        <CreatorMetric icon={<FileText size={20} />} label="Posts From Last Scrape" value={(stats?.new_posts_from_last_scrape_count ?? 0).toString()} />
+        <CreatorMetric icon={<Plus size={20} />} label="Added Today" value={recentlyAddedTodayCount.toString()} />
       </section>
 
       <section className="creator-table-panel">
@@ -270,18 +301,27 @@ export function CreatorsView() {
           </label>
 
           <label className="sort-control">
-            <span>Sort by:</span>
-            <select value={sortBy} onChange={(event) => changeCreatorSort(event.target.value as CreatorSortBy)}>
+            <span>View:</span>
+            <select value={viewMode} onChange={(event) => setViewMode(event.target.value as CreatorViewMode)}>
+              <option value="all">All Creators</option>
               <option value="recently_added">Recently Added</option>
-              <option value="last_checked_desc">Last Checked Newest</option>
-              <option value="last_checked_asc">Last Checked Oldest</option>
-              <option value="new_posts_desc">New Posts</option>
+              <option value="new_posts">New Posts</option>
+              <option value="profile_never_scraped">Profile Never Scraped</option>
               <option value="name_asc">Name A-Z</option>
             </select>
           </label>
 
           <div className="selection-copy-row">
             <span>{selectedCreators.length} selected</span>
+            <button
+              className="secondary-button compact"
+              type="button"
+              onClick={() => void scrapeProfiles(selectedCreators.map((creator) => creator.creator_id))}
+              disabled={!ENABLE_SCRAPING || !selectedCreators.length || scrapingCreatorIds.size > 0}
+            >
+              {scrapingCreatorIds.size > 0 ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+              Scrape
+            </button>
             <button
               className="secondary-button compact"
               type="button"
@@ -304,6 +344,7 @@ export function CreatorsView() {
         </div>
 
         {error ? <div className="error-banner">{error}</div> : null}
+        {profileJobStatus ? <ProfileScrapeProgress status={profileJobStatus} /> : null}
         {loading ? <div className="empty-card slim">Loading creators...</div> : null}
 
         <div className="creator-table-wrap">
@@ -324,21 +365,7 @@ export function CreatorsView() {
                 <th>Creator</th>
                 <th>Headline</th>
                 <th>LinkedIn URL</th>
-                <th>
-                  <button
-                    className="sortable-heading"
-                    type="button"
-                    onClick={() => {
-                      const nextSort = lastCheckedSort === "desc" ? "asc" : "desc";
-                      setLastCheckedSort(nextSort);
-                      changeCreatorSort(nextSort === "desc" ? "last_checked_desc" : "last_checked_asc");
-                    }}
-                    aria-label={`Sort last checked ${lastCheckedSort === "desc" ? "ascending" : "descending"}`}
-                  >
-                    Last Checked
-                    {lastCheckedSort === "desc" ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
-                  </button>
-                </th>
+                <th>Last Checked</th>
                 <th>New post (last 24 h)</th>
                 <th>Actions</th>
               </tr>
@@ -351,8 +378,11 @@ export function CreatorsView() {
                     profile={profileMap.get(creator.creator_id)}
                     selected={selectedCreatorIds.has(creator.creator_id)}
                     deleting={deletingCreatorIds.has(creator.creator_id)}
+                    scraping={scrapingCreatorIds.has(creator.creator_id)}
+                    scrapeBusy={scrapingCreatorIds.size > 0}
                     onToggleSelected={toggleCreatorSelection}
                     onCopyProfile={copyCreatorProfile}
+                    onScrapeProfile={(creatorId) => void scrapeProfiles([creatorId])}
                     onDeleteCreator={(creatorId) => void deleteCreators([creatorId])}
                     key={creator.creator_id}
                   />
@@ -452,34 +482,18 @@ function CreatorMetric({
 function compareCreators(
   left: CreatorResponse,
   right: CreatorResponse,
-  sortBy: CreatorSortBy,
+  viewMode: CreatorViewMode,
   profileMap: Map<string, CreatorProfileDetailsResponse>,
 ) {
-  if (sortBy === "recently_added") {
+  if (viewMode === "recently_added") {
     return compareNewestFirst(left.added_at, right.added_at, () => compareNames(left, right, profileMap));
   }
-  if (sortBy === "last_checked_asc") {
-    return compareLastChecked(left, right, "asc");
-  }
-  if (sortBy === "last_checked_desc") {
-    return compareLastChecked(left, right, "desc");
-  }
-  if (sortBy === "new_posts_desc") {
+  if (viewMode === "new_posts") {
     const countDiff = (right.new_count ?? 0) - (left.new_count ?? 0);
-    return countDiff || compareLastChecked(left, right, "desc");
+    return countDiff || compareNames(left, right, profileMap);
   }
+  if (viewMode === "all") return 0;
   return compareNames(left, right, profileMap);
-}
-
-function compareLastChecked(left: CreatorResponse, right: CreatorResponse, direction: LastCheckedSort) {
-  const leftTime = lastCheckedTime(left);
-  const rightTime = lastCheckedTime(right);
-  if (leftTime === null && rightTime === null) {
-    return left.creator_id.localeCompare(right.creator_id);
-  }
-  if (leftTime === null) return 1;
-  if (rightTime === null) return -1;
-  return direction === "desc" ? rightTime - leftTime : leftTime - rightTime;
 }
 
 function compareNames(
@@ -504,12 +518,6 @@ function compareNewestFirst(leftValue: string | null | undefined, rightValue: st
 function parseSortableTime(value: string | null | undefined) {
   if (!value) return null;
   const time = new Date(value).getTime();
-  return Number.isNaN(time) ? null : time;
-}
-
-function lastCheckedTime(creator: CreatorResponse) {
-  if (!creator.last_checked_at) return null;
-  const time = new Date(creator.last_checked_at).getTime();
   return Number.isNaN(time) ? null : time;
 }
 
@@ -570,16 +578,22 @@ function CreatorRow({
   profile,
   selected,
   deleting,
+  scraping,
+  scrapeBusy,
   onToggleSelected,
   onCopyProfile,
+  onScrapeProfile,
   onDeleteCreator,
 }: {
   creator: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
   selected: boolean;
   deleting: boolean;
+  scraping: boolean;
+  scrapeBusy: boolean;
   onToggleSelected: (creatorId: string) => void;
   onCopyProfile: (creator: CreatorResponse) => void;
+  onScrapeProfile: (creatorId: string) => void;
   onDeleteCreator: (creatorId: string) => void;
 }) {
   const label = safeProfileName(profile, creator);
@@ -621,6 +635,16 @@ function CreatorRow({
       <td>{creator.new_count ? `${creator.new_count} New` : "0 Posts"}</td>
       <td>
         <div className="creator-row-actions">
+          <button
+            className="icon-button tiny"
+            type="button"
+            onClick={() => onScrapeProfile(creator.creator_id)}
+            disabled={!ENABLE_SCRAPING || scrapeBusy}
+            aria-label={`Scrape ${label} profile`}
+            title="Scrape profile"
+          >
+            {scraping ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+          </button>
           <button className="icon-button tiny" type="button" onClick={() => onCopyProfile(creator)} aria-label={`Copy ${label} profile`}>
             <Copy size={15} />
           </button>
@@ -639,6 +663,18 @@ function CreatorRow({
   );
 }
 
+function isToday(value: string | null | undefined) {
+  const time = parseSortableTime(value);
+  if (time === null) return false;
+  const date = new Date(time);
+  const today = new Date();
+  return (
+    date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate()
+  );
+}
+
 function formatCreatorForClipboard(
   creator: CreatorResponse,
   profile?: CreatorProfileDetailsResponse,
@@ -650,30 +686,54 @@ function formatCreatorForClipboard(
     : profile?.about || "Not saved";
   const experience = profileLooksUnavailable(profile)
     ? "Profile not found or unavailable"
-    : profile?.experience?.length
-      ? profile.experience.join("\n")
-      : "Not saved";
-  const lines = [
-    index ? String(index) : "",
-    "Name",
-    name,
-    "",
-    "Headline",
-    safeProfileHeadline(profile, creator),
-    "",
-    "About",
-    about,
-    "",
-    "Experience",
-    experience,
-    "",
-    "Location",
-    profileLooksUnavailable(profile) ? "Profile not found" : profile?.location || "Not saved",
-    "",
-    "LinkedIn",
-    creator.profile_url || profile?.profile_url || "Not saved",
+    : formatExperienceForClipboard(profile?.experience ?? []) || "Not saved";
+  const sections = [
+    ["Name", name],
+    ["Headline", safeProfileHeadline(profile, creator)],
+    ["About", about],
+    ["Location", profileLooksUnavailable(profile) ? "Profile not found" : profile?.location || "Not saved"],
+    ["LinkedIn", creator.profile_url || profile?.profile_url || "Not saved"],
+    ["Email", profile?.email || "Not saved"],
+    ["Experience", experience],
   ];
-  return lines.join("\n").trim();
+  const text = [
+    index ? String(index) : "",
+    ...sections.flatMap(([label, value]) => [label, value, ""]),
+  ].join("\n").trim();
+  const html = [
+    index ? `<p><strong>${index}</strong></p>` : "",
+    ...sections.map(([label, value]) => htmlSection(label, value)),
+  ].join("");
+  return { text, html };
+}
+
+function htmlSection(label: string, value: string) {
+  return `<p><strong>${escapeHtml(label)}</strong><br />${escapeHtml(value).replace(/\n/g, "<br />")}</p>`;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function writeRichClipboard(text: string, html: string) {
+  if (typeof window !== "undefined" && "ClipboardItem" in window && navigator.clipboard.write) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        }),
+      ]);
+      return;
+    } catch {
+      // Fall back to plain text when the target/browser rejects rich clipboard writes.
+    }
+  }
+  await navigator.clipboard.writeText(text);
 }
 
 function AddCreatorDialog({
@@ -686,6 +746,7 @@ function AddCreatorDialog({
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [profileJobStatus, setProfileJobStatus] = useState<ScrapeJobStatusResponse | null>(null);
 
   async function submit() {
     const normalizedUrl = normalizeLinkedInProfileUrl(url);
@@ -699,10 +760,11 @@ function AddCreatorDialog({
     }
     setBusy(true);
     setError("");
+    setProfileJobStatus(null);
     try {
       const creator = await addCreator({ user_id: DEFAULT_USER_ID, profile_url: normalizedUrl });
       if (ENABLE_SCRAPING) {
-        const profileResult = await scrapeCreatorProfiles(DEFAULT_USER_ID, [creator.creator_id]);
+        const profileResult = await scrapeCreatorProfiles(DEFAULT_USER_ID, [creator.creator_id], 3, setProfileJobStatus);
         if (profileResult.errors.length) {
           const firstError = profileResult.errors[0];
           throw new Error(firstError.message || "Creator was added, but profile scraping failed.");
@@ -763,6 +825,7 @@ function AddCreatorDialog({
           </div>
 
           {error ? <div className="error-banner">{error}</div> : null}
+          {profileJobStatus ? <ProfileScrapeProgress status={profileJobStatus} /> : null}
         </div>
 
         <footer className="drawer-footer">
@@ -838,6 +901,7 @@ function BulkImportForm({
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<BulkCreatorPreviewResponse | null>(null);
   const [result, setResult] = useState<BulkCreatorImportResponse | null>(null);
+  const [profileJobStatus, setProfileJobStatus] = useState<ScrapeJobStatusResponse | null>(null);
   const [error, setError] = useState("");
 
   const skippedExisting = result?.skipped_existing_creators ?? [];
@@ -856,6 +920,7 @@ function BulkImportForm({
     setFile(nextFile);
     setPreview(null);
     setResult(null);
+    setProfileJobStatus(null);
     setError("");
     if (!nextFile) return;
 
@@ -877,6 +942,7 @@ function BulkImportForm({
     }
     setBusy(true);
     setError("");
+    setProfileJobStatus(null);
     try {
       const response = await importCreators(DEFAULT_USER_ID, file);
       setResult(response);
@@ -892,6 +958,8 @@ function BulkImportForm({
         const profileResult = await scrapeCreatorProfiles(
           DEFAULT_USER_ID,
           response.added_creators.map((creator) => creator.creator_id),
+          3,
+          setProfileJobStatus,
         );
         if (profileResult.errors.length) {
           const firstError = profileResult.errors[0];
@@ -968,6 +1036,7 @@ function BulkImportForm({
         ) : null}
 
         {error ? <div className="error-banner">{error}</div> : null}
+        {profileJobStatus ? <ProfileScrapeProgress status={profileJobStatus} /> : null}
       </div>
 
       <footer className="drawer-footer">
@@ -987,6 +1056,34 @@ function MiniStat({ label, value, danger = false }: { label: string; value: stri
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
+  );
+}
+
+function ProfileScrapeProgress({ status }: { status: ScrapeJobStatusResponse }) {
+  return (
+    <div className="scrape-progress-card compact-progress">
+      <div>
+        <strong>{status.status === "succeeded" ? "Profile scrape complete" : "Profile scrape running"}</strong>
+        <span>{status.message || "Waiting for backend progress..."}</span>
+      </div>
+      <div className="scrape-progress-grid">
+        <div>
+          <span>Profiles</span>
+          <strong>{Math.min(status.scraped_creators, status.total_creators)} / {status.total_creators}</strong>
+        </div>
+        <div>
+          <span>Saved</span>
+          <strong>{status.scraped_profiles}</strong>
+        </div>
+        <div>
+          <span>Errors</span>
+          <strong>{status.errors.length}</strong>
+        </div>
+      </div>
+      {status.errors[0]?.message ? (
+        <p>{status.errors[0].creator_id ? `${status.errors[0].creator_id}: ` : ""}{status.errors[0].message}</p>
+      ) : null}
+    </div>
   );
 }
 

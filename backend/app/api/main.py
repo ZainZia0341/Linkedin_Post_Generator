@@ -38,6 +38,8 @@ from app.api.schemas import (
     RecentScrapeCreatorsResponse,
     ScrapeCreatorProfilesRequest,
     ScrapeCreatorProfilesResponse,
+    ScrapeJobStartResponse,
+    ScrapeJobStatusResponse,
     ScrapePostEngagementRequest,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
@@ -81,6 +83,9 @@ from app.api.services import (
     send_comment_replies,
     send_connection_requests,
     send_dms,
+    get_scrape_job,
+    start_profile_scrape_job,
+    start_recent_scrape_job,
     sync_recent_linkedin_posts,
     thread_response,
     thread_summary,
@@ -215,7 +220,12 @@ def get_user_data(
     creators = [CreatorResponse.model_validate(creator) for creator in creator_records]
     threads = [thread_summary(thread) for thread in thread_records]
     activities = list_all_activities(repo, user_id, limit)
-    dashboard_stats = build_dashboard_stats(creator_records, thread_records, activities)
+    dashboard_stats = build_dashboard_stats(
+        creator_records,
+        thread_records,
+        activities,
+        existing_stats=dict(user.get("dashboard_stats") or {}),
+    )
     repo.put_user({**user, "dashboard_stats": dashboard_stats.model_dump()})
     return UserDataResponse(
         user=user_response(user),
@@ -502,6 +512,18 @@ def scrape_creator_profiles_endpoint(
         raise _not_found(exc) from exc
 
 
+@app.post("/scrape-jobs/creators/profile-details", response_model=ScrapeJobStartResponse)
+def start_creator_profile_scrape_job_endpoint(
+    payload: ScrapeCreatorProfilesRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ScrapeJobStartResponse:
+    _require_scraping_enabled()
+    try:
+        return start_profile_scrape_job(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
 @app.get("/users/{user_id}/creators", response_model=list[CreatorResponse])
 def list_creators(
     user_id: str,
@@ -571,6 +593,26 @@ def scrape_recent_creators_endpoint(
     _require_scraping_enabled()
     try:
         return scrape_creators_recent_24h(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/scrape-jobs/creators/recent-24h", response_model=ScrapeJobStartResponse)
+def start_recent_creators_scrape_job_endpoint(
+    payload: RecentScrapeCreatorsRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ScrapeJobStartResponse:
+    _require_scraping_enabled()
+    try:
+        return start_recent_scrape_job(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/scrape-jobs/{job_id}", response_model=ScrapeJobStatusResponse)
+def get_scrape_job_endpoint(job_id: str) -> ScrapeJobStatusResponse:
+    try:
+        return get_scrape_job(job_id)
     except KeyError as exc:
         raise _not_found(exc) from exc
 

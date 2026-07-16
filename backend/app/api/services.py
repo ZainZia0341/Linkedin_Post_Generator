@@ -7,8 +7,9 @@ import hashlib
 import io
 import json
 import re
+from threading import Lock
 import time
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 import zipfile
 from xml.etree import ElementTree
@@ -49,6 +50,8 @@ from app.api.schemas import (
     ScrapeCreatorProfilesResponse,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
+    ScrapeJobStartResponse,
+    ScrapeJobStatusResponse,
     SyncRecentOwnPostsRequest,
     SyncRecentOwnPostsResponse,
     ThreadResponse,
@@ -88,11 +91,18 @@ COMMENT_TOPICS = ["Add Value", "Congratulate", "Agree", "Disagree", "Challenge",
 LINKEDIN_URL_RE = re.compile(r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?linkedin\.com(?:/[^\s<>'\"]*)?", flags=re.I)
 LINKEDIN_ACTIVITY_RE = re.compile(r"urn:li:activity:\d+", flags=re.I)
 CREATOR_IMPORT_EXISTING_LIMIT = 1000
-RECENTLY_ADDED_WINDOW_DAYS = 7
+RECENTLY_ADDED_WINDOW_DAYS = 1
 SCRAPING_STALE_AFTER_HOURS = 24
 RECENT_ACTIVITY_RETENTION_DAYS = 3
 DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS = 3
 LINKEDIN_POST_EXISTING_LIMIT = 1000
+LINKEDIN_OWN_POSTS_CREATOR_ID = "__linkedin_own_posts__"
+LINKEDIN_OWN_POST_META_KEY = "linkedin_own_post"
+SCRAPE_JOB_TERMINAL_STATUSES = {"succeeded", "failed"}
+
+_SCRAPE_JOB_LOCK = Lock()
+_SCRAPE_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+_SCRAPE_JOBS: dict[str, dict[str, Any]] = {}
 
 SAVED_ACTIONS = [
     "Get topic ideas for my posts",
@@ -534,6 +544,7 @@ def list_creator_profile_details(
 def scrape_creator_profile_details(
     repo: DynamoRepository,
     request: ScrapeCreatorProfilesRequest,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ScrapeCreatorProfilesResponse:
     require_user(repo, request.user_id)
     creators = repo.list_creators(request.user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
@@ -561,6 +572,15 @@ def scrape_creator_profile_details(
                 _, raw_details = future.result()
             except Exception as exc:
                 errors.append({"creator_id": creator["creator_id"], "message": str(exc)})
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "creator_id": creator["creator_id"],
+                            "status": "failed",
+                            "profiles_found": 0,
+                            "message": str(exc),
+                        }
+                    )
                 continue
 
             if raw_details.get("error"):
@@ -584,6 +604,15 @@ def scrape_creator_profile_details(
                 creator["profile_details_checked_at"] = timestamp
                 creator["updated_at"] = timestamp
                 repo.put_creator(creator)
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "creator_id": creator["creator_id"],
+                            "status": "failed",
+                            "profiles_found": 0,
+                            "message": str(raw_details.get("message") or raw_details.get("error")),
+                        }
+                    )
                 continue
 
             details = _normalize_profile_details(raw_details)
@@ -594,6 +623,14 @@ def scrape_creator_profile_details(
             creator["updated_at"] = timestamp
             saved_creator = repo.put_creator(creator)
             profiles.append(_creator_profile_details_response(saved_creator))
+            if progress_callback:
+                progress_callback(
+                    {
+                        "creator_id": creator["creator_id"],
+                        "status": "succeeded",
+                        "profiles_found": 1,
+                    }
+                )
 
     return ScrapeCreatorProfilesResponse(
         user_id=request.user_id,
@@ -854,6 +891,10 @@ def _hours_from_linkedin_time_text(posted_at_text: str) -> float | None:
         return None
     if any(marker in text for marker in ("just now", "now", "moments ago", "seconds ago")):
         return 0.0
+    if any(marker in text for marker in ("a minute ago", "1 minute ago")):
+        return 1 / 60
+    if any(marker in text for marker in ("an hour ago", "a hour ago", "1 hour ago")):
+        return 1.0
     if "yesterday" in text:
         return 24.0
     if re.search(r"\b\d+\s*(?:w|wk|wks|week|weeks|mo|month|months|y|yr|yrs|year|years)\b", text):
@@ -1008,6 +1049,12 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
             creator["updated_at"] = timestamp
             repo.put_creator(creator)
 
+    _save_creator_post_scrape_metrics(
+        repo,
+        request.user_id,
+        latest_post_count=len(new_activities),
+        newly_saved_count=len(new_activities),
+    )
     return ScrapeCreatorsResponse(
         user_id=request.user_id,
         checked_creator_ids=[creator["creator_id"] for creator in creators],
@@ -1019,6 +1066,7 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
 def scrape_creators_recent_24h(
     repo: DynamoRepository,
     request: RecentScrapeCreatorsRequest,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> RecentScrapeCreatorsResponse:
     require_user(repo, request.user_id)
     creators = repo.list_creators(request.user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
@@ -1031,6 +1079,7 @@ def scrape_creators_recent_24h(
 
     errors: list[dict[str, str]] = []
     activities: list[ActivityResponse] = []
+    newly_saved_count = 0
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         _sleep_before_playwright_launch(request.launch_delay_seconds)
@@ -1050,20 +1099,35 @@ def scrape_creators_recent_24h(
                 _, posts = future.result()
             except Exception as exc:
                 errors.append({"creator_id": creator["creator_id"], "message": str(exc)})
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "creator_id": creator["creator_id"],
+                            "status": "failed",
+                            "posts_found": 0,
+                            "message": str(exc),
+                        }
+                    )
                 continue
 
             if posts and isinstance(posts[0], dict) and posts[0].get("error"):
-                errors.append(
-                    {
-                        "creator_id": creator["creator_id"],
-                        "message": str(posts[0].get("message") or posts[0].get("error")),
-                    }
-                )
+                message = str(posts[0].get("message") or posts[0].get("error"))
+                errors.append({"creator_id": creator["creator_id"], "message": message})
                 creator["last_checked_at"] = timestamp
                 repo.put_creator(creator)
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "creator_id": creator["creator_id"],
+                            "status": "failed",
+                            "posts_found": 0,
+                            "message": message,
+                        }
+                    )
                 continue
 
             creator_new_count = 0
+            creator_posts_found = 0
             for post in posts:
                 if not isinstance(post, dict) or not str(post.get("raw_text", "")).strip():
                     continue
@@ -1079,13 +1143,29 @@ def scrape_creators_recent_24h(
                 activities.append(_activity_response(activity))
                 if existing is None:
                     creator_new_count += 1
+                    newly_saved_count += 1
+                creator_posts_found += 1
 
             creator["last_checked_at"] = timestamp
             creator["seen_count"] = len(repo.list_creator_activities(request.user_id, creator["creator_id"], API_LIST_LIMIT))
             creator["new_count"] = creator_new_count
             creator["updated_at"] = timestamp
             repo.put_creator(creator)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "creator_id": creator["creator_id"],
+                        "status": "succeeded",
+                        "posts_found": creator_posts_found,
+                    }
+                )
 
+    _save_creator_post_scrape_metrics(
+        repo,
+        request.user_id,
+        latest_post_count=len(activities),
+        newly_saved_count=newly_saved_count,
+    )
     return RecentScrapeCreatorsResponse(
         user_id=request.user_id,
         checked_creator_ids=[creator["creator_id"] for creator in creators],
@@ -1093,6 +1173,202 @@ def scrape_creators_recent_24h(
         activities=activities,
         errors=errors,
     )
+
+
+def _target_creator_count(
+    repo: DynamoRepository,
+    user_id: str,
+    creator_ids: list[str] | None = None,
+) -> int:
+    creators = repo.list_creators(user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
+    if creator_ids:
+        creator_id_set = set(creator_ids)
+        creators = [creator for creator in creators if creator["creator_id"] in creator_id_set]
+    return len(creators)
+
+
+def _job_response(record: dict[str, Any]) -> ScrapeJobStatusResponse:
+    return ScrapeJobStatusResponse.model_validate(record)
+
+
+def _job_start_response(record: dict[str, Any]) -> ScrapeJobStartResponse:
+    return ScrapeJobStartResponse(
+        job_id=str(record["job_id"]),
+        job_type=str(record["job_type"]),
+        user_id=str(record["user_id"]),
+        status=str(record["status"]),
+        status_url=f"/scrape-jobs/{record['job_id']}",
+        total_creators=int(record.get("total_creators") or 0),
+        created_at=str(record.get("created_at", "")),
+    )
+
+
+def _save_scrape_job(record: dict[str, Any]) -> None:
+    with _SCRAPE_JOB_LOCK:
+        _SCRAPE_JOBS[str(record["job_id"])] = dict(record)
+
+
+def _update_scrape_job(job_id: str, **updates: Any) -> None:
+    with _SCRAPE_JOB_LOCK:
+        current = dict(_SCRAPE_JOBS.get(job_id) or {})
+        if not current:
+            return
+        current.update(updates)
+        current["updated_at"] = now_iso()
+        _SCRAPE_JOBS[job_id] = current
+
+
+def _scrape_job_progress(job_id: str, job_type: str) -> Callable[[dict[str, Any]], None]:
+    def update(event: dict[str, Any]) -> None:
+        with _SCRAPE_JOB_LOCK:
+            current = dict(_SCRAPE_JOBS.get(job_id) or {})
+            if not current:
+                return
+            current["scraped_creators"] = int(current.get("scraped_creators") or 0) + 1
+            current["current_creator_id"] = str(event.get("creator_id", ""))
+            if job_type == "creator_posts":
+                current["total_posts"] = int(current.get("total_posts") or 0) + int(event.get("posts_found") or 0)
+                current["message"] = (
+                    f"Scraped {current['scraped_creators']} of {current.get('total_creators', 0)} creators; "
+                    f"{current.get('total_posts', 0)} posts found."
+                )
+            else:
+                current["scraped_profiles"] = int(current.get("scraped_profiles") or 0) + int(event.get("profiles_found") or 0)
+                current["message"] = (
+                    f"Scraped {current['scraped_creators']} of {current.get('total_creators', 0)} profiles."
+                )
+            if event.get("status") == "failed":
+                errors = list(current.get("errors") or [])
+                errors.append(
+                    {
+                        "creator_id": str(event.get("creator_id", "")),
+                        "message": str(event.get("message", "Scrape failed.")),
+                    }
+                )
+                current["errors"] = errors
+            current["updated_at"] = now_iso()
+            _SCRAPE_JOBS[job_id] = current
+
+    return update
+
+
+def _create_scrape_job(
+    repo: DynamoRepository,
+    user_id: str,
+    job_type: str,
+    total_creators: int,
+    runner: Callable[[str], None],
+) -> ScrapeJobStartResponse:
+    require_user(repo, user_id)
+    timestamp = now_iso()
+    job_id = f"SCRAPE-{job_type}-{uuid4()}"
+    record = {
+        "job_id": job_id,
+        "job_type": job_type,
+        "user_id": user_id,
+        "status": "queued",
+        "created_at": timestamp,
+        "started_at": "",
+        "updated_at": timestamp,
+        "completed_at": "",
+        "total_creators": total_creators,
+        "scraped_creators": 0,
+        "total_posts": 0,
+        "scraped_profiles": 0,
+        "current_creator_id": "",
+        "message": "Queued.",
+        "errors": [],
+        "result": {},
+    }
+    _save_scrape_job(record)
+    _SCRAPE_JOB_EXECUTOR.submit(runner, job_id)
+    return _job_start_response(record)
+
+
+def start_recent_scrape_job(
+    repo: DynamoRepository,
+    request: RecentScrapeCreatorsRequest,
+) -> ScrapeJobStartResponse:
+    total_creators = _target_creator_count(repo, request.user_id, request.creator_ids)
+
+    def run(job_id: str) -> None:
+        _update_scrape_job(job_id, status="running", started_at=now_iso(), message="Scraping creator posts.")
+        try:
+            response = scrape_creators_recent_24h(
+                repo,
+                request,
+                progress_callback=_scrape_job_progress(job_id, "creator_posts"),
+            )
+            _update_scrape_job(
+                job_id,
+                status="succeeded",
+                completed_at=now_iso(),
+                total_posts=len(response.activities),
+                errors=response.errors,
+                result=response.model_dump(),
+                message=(
+                    f"Completed {len(response.checked_creator_ids)} creator scrape"
+                    f"{'' if len(response.checked_creator_ids) == 1 else 's'}; "
+                    f"{len(response.activities)} posts found."
+                ),
+            )
+        except Exception as exc:
+            _update_scrape_job(
+                job_id,
+                status="failed",
+                completed_at=now_iso(),
+                errors=[{"message": str(exc)}],
+                message=str(exc),
+            )
+
+    return _create_scrape_job(repo, request.user_id, "creator_posts", total_creators, run)
+
+
+def start_profile_scrape_job(
+    repo: DynamoRepository,
+    request: ScrapeCreatorProfilesRequest,
+) -> ScrapeJobStartResponse:
+    total_creators = _target_creator_count(repo, request.user_id, request.creator_ids)
+
+    def run(job_id: str) -> None:
+        _update_scrape_job(job_id, status="running", started_at=now_iso(), message="Scraping creator profiles.")
+        try:
+            response = scrape_creator_profile_details(
+                repo,
+                request,
+                progress_callback=_scrape_job_progress(job_id, "creator_profiles"),
+            )
+            _update_scrape_job(
+                job_id,
+                status="succeeded",
+                completed_at=now_iso(),
+                scraped_profiles=len(response.profiles),
+                errors=response.errors,
+                result=response.model_dump(),
+                message=(
+                    f"Completed {len(response.checked_creator_ids)} profile scrape"
+                    f"{'' if len(response.checked_creator_ids) == 1 else 's'}; "
+                    f"{len(response.profiles)} profiles saved."
+                ),
+            )
+        except Exception as exc:
+            _update_scrape_job(
+                job_id,
+                status="failed",
+                completed_at=now_iso(),
+                errors=[{"message": str(exc)}],
+                message=str(exc),
+            )
+
+    return _create_scrape_job(repo, request.user_id, "creator_profiles", total_creators, run)
+
+
+def get_scrape_job(job_id: str) -> ScrapeJobStatusResponse:
+    with _SCRAPE_JOB_LOCK:
+        record = dict(_SCRAPE_JOBS.get(job_id) or {})
+    if not record:
+        raise KeyError(f"Scrape job not found: {job_id}")
+    return _job_response(record)
 
 
 def list_all_activities(repo: DynamoRepository, user_id: str, limit: int | None = None) -> list[ActivityResponse]:
@@ -1124,22 +1400,60 @@ def _creator_recently_added(creator: dict[str, Any], now: datetime) -> bool:
     added_at = _parse_activity_datetime(creator.get("added_at"))
     if added_at is None:
         return False
-    return added_at >= now - timedelta(days=RECENTLY_ADDED_WINDOW_DAYS)
+    return added_at.date() == now.date()
+
+
+def _save_creator_post_scrape_metrics(
+    repo: DynamoRepository,
+    user_id: str,
+    latest_post_count: int,
+    newly_saved_count: int,
+) -> None:
+    user = require_user(repo, user_id)
+    existing_stats = dict(user.get("dashboard_stats") or {})
+    current_saved_count = len(list_all_activities(repo, user_id, CREATOR_IMPORT_EXISTING_LIMIT))
+    if "total_scraped_posts_count" in existing_stats:
+        total_scraped_posts_count = int(existing_stats.get("total_scraped_posts_count") or 0) + newly_saved_count
+    else:
+        total_scraped_posts_count = max(
+            current_saved_count,
+            int(existing_stats.get("activity_count") or 0),
+        )
+    existing_stats.update(
+        {
+            "activity_count": current_saved_count,
+            "total_scraped_posts_count": total_scraped_posts_count,
+            "new_posts_from_last_scrape_count": latest_post_count,
+            "last_creator_post_scrape_at": now_iso(),
+        }
+    )
+    repo.put_user({**user, "dashboard_stats": existing_stats})
 
 
 def build_dashboard_stats(
     creators: list[dict[str, Any]],
     threads: list[dict[str, Any]],
     activities: list[ActivityResponse | dict[str, Any]],
+    existing_stats: dict[str, Any] | None = None,
 ) -> DashboardStatsResponse:
     now = datetime.now(UTC)
     activity_dicts = [_activity_to_dict(activity) for activity in activities]
+    saved_stats = existing_stats or {}
+    activity_count = len(activity_dicts)
     return DashboardStatsResponse(
         creator_count=len(creators),
         thread_count=len(threads),
-        activity_count=len(activity_dicts),
+        activity_count=activity_count,
+        total_scraped_posts_count=max(
+            activity_count,
+            int(saved_stats.get("total_scraped_posts_count") or 0),
+        ),
         new_posts_today_count=sum(1 for activity in activity_dicts if _is_post_inside_window(activity, 24)),
-        new_posts_from_last_scrape_count=sum(int(creator.get("new_count") or 0) for creator in creators),
+        new_posts_from_last_scrape_count=int(
+            saved_stats.get("new_posts_from_last_scrape_count")
+            if "new_posts_from_last_scrape_count" in saved_stats
+            else sum(int(creator.get("new_count") or 0) for creator in creators)
+        ),
         needs_scraping_count=sum(1 for creator in creators if _creator_needs_scraping(creator, now)),
         recently_added_count=sum(1 for creator in creators if _creator_recently_added(creator, now)),
         recently_added_window_days=RECENTLY_ADDED_WINDOW_DAYS,
@@ -1409,11 +1723,9 @@ def _user_post_id(user_id: str, post_id: str) -> str:
 
 
 def _post_url_from_id(post_id: str, post_url: str = "") -> str:
-    if post_url:
-        return post_url
     if post_id.startswith("urn:li:activity:"):
         return f"https://www.linkedin.com/feed/update/{post_id}/"
-    return ""
+    return post_url
 
 
 def _post_id_from_raw(raw_post: dict[str, Any]) -> str:
@@ -1514,6 +1826,162 @@ def _action_log_response(record: dict[str, Any]) -> LinkedInActionLogResponse:
     )
 
 
+def _own_post_activity(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+) -> dict[str, Any] | None:
+    return repo.get_activity(user_id, LINKEDIN_OWN_POSTS_CREATOR_ID, post_id)
+
+
+def _own_post_meta(activity: dict[str, Any] | None) -> dict[str, Any]:
+    if not activity:
+        return {}
+    return dict(activity.get(LINKEDIN_OWN_POST_META_KEY) or {})
+
+
+def _own_post_record_from_activity(activity: dict[str, Any]) -> dict[str, Any]:
+    meta = _own_post_meta(activity)
+    return {
+        **meta,
+        "user_id": str(activity.get("user_id", meta.get("user_id", ""))),
+        "post_id": str(activity.get("post_id", meta.get("post_id", ""))),
+        "post_url": str(activity.get("post_url", meta.get("post_url", ""))),
+        "text": str(meta.get("text") or activity.get("raw_text", "")),
+        "created_at_text": str(meta.get("created_at_text") or activity.get("posted_at_text", "")),
+        "first_seen_at": str(meta.get("first_seen_at") or activity.get("fetched_at", "")),
+        "source": str(meta.get("source", "platform")),
+        "estimated_posted_at": str(meta.get("estimated_posted_at", "")),
+        "last_scraped_at": str(meta.get("last_scraped_at", "")),
+        "reaction_count": int(meta.get("reaction_count") or 0),
+        "comment_count": int(meta.get("comment_count") or 0),
+        "impression_count": int(meta.get("impression_count") or 0),
+        "scrape_status": str(meta.get("scrape_status", "")),
+        "raw_metadata": dict(meta.get("raw_metadata") or {}),
+        "status": str(meta.get("status", "tracked")),
+    }
+
+
+def _get_own_post_record(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+) -> dict[str, Any] | None:
+    activity = _own_post_activity(repo, user_id, post_id)
+    return _own_post_record_from_activity(activity) if activity else None
+
+
+def _own_post_activities(
+    repo: DynamoRepository,
+    user_id: str,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    return repo.list_creator_activities(
+        user_id,
+        LINKEDIN_OWN_POSTS_CREATOR_ID,
+        limit or LINKEDIN_POST_EXISTING_LIMIT,
+    )
+
+
+def _save_own_post_record(
+    repo: DynamoRepository,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    user_id = str(record["user_id"])
+    post_id = str(record["post_id"])
+    timestamp = now_iso()
+    existing_activity = _own_post_activity(repo, user_id, post_id) or {}
+    existing_meta = _own_post_meta(existing_activity)
+    meta = {**existing_meta, **record}
+    text = str(meta.get("text", ""))
+    content_hash = hashlib.sha256((text or post_id).encode("utf-8")).hexdigest()
+    activity = {
+        **existing_activity,
+        "user_creator_id": f"{user_id}#{LINKEDIN_OWN_POSTS_CREATOR_ID}",
+        "user_id": user_id,
+        "creator_id": LINKEDIN_OWN_POSTS_CREATOR_ID,
+        "post_id": post_id,
+        "post_url": str(meta.get("post_url", "")),
+        "raw_text": text,
+        "author_name": str(meta.get("author_name", "Own LinkedIn post")),
+        "posted_at_text": str(meta.get("created_at_text", "")),
+        "fetched_at": str(meta.get("first_seen_at") or existing_activity.get("fetched_at") or timestamp),
+        "content_hash": str(existing_activity.get("content_hash") or content_hash),
+        "source": "linkedin_own_post",
+        "is_new": False,
+        LINKEDIN_OWN_POST_META_KEY: meta,
+    }
+    saved = repo.put_activity(activity)
+    return _own_post_record_from_activity(saved)
+
+
+def _post_engager_records(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+) -> list[dict[str, Any]]:
+    activity = _own_post_activity(repo, user_id, post_id)
+    meta = _own_post_meta(activity)
+    engagers = meta.get("engagers") or {}
+    if isinstance(engagers, dict):
+        return [dict(item) for item in engagers.values() if isinstance(item, dict)]
+    if isinstance(engagers, list):
+        return [dict(item) for item in engagers if isinstance(item, dict)]
+    return []
+
+
+def _put_post_engager_record(
+    repo: DynamoRepository,
+    post: dict[str, Any],
+    engager: dict[str, Any],
+) -> dict[str, Any]:
+    user_id = str(post["user_id"])
+    post_id = str(post["post_id"])
+    activity = _own_post_activity(repo, user_id, post_id)
+    if not activity:
+        raise KeyError(f"LinkedIn post not found: {post_id}")
+    meta = _own_post_meta(activity)
+    existing_engagers = {
+        str(item.get("profile_key", "")): dict(item)
+        for item in _post_engager_records(repo, user_id, post_id)
+        if str(item.get("profile_key", ""))
+    }
+    existing_engagers[str(engager["profile_key"])] = dict(engager)
+    meta["engagers"] = existing_engagers
+    activity[LINKEDIN_OWN_POST_META_KEY] = meta
+    repo.put_activity(activity)
+    return engager
+
+
+def _action_log_records(
+    repo: DynamoRepository,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    logs: list[dict[str, Any]] = []
+    for activity in _own_post_activities(repo, user_id, LINKEDIN_POST_EXISTING_LIMIT):
+        action_logs = _own_post_meta(activity).get("action_logs") or []
+        if isinstance(action_logs, list):
+            logs.extend(dict(item) for item in action_logs if isinstance(item, dict))
+    return logs
+
+
+def _append_action_log(
+    repo: DynamoRepository,
+    user_id: str,
+    post_id: str,
+    log: dict[str, Any],
+) -> None:
+    activity = _own_post_activity(repo, user_id, post_id)
+    if not activity:
+        raise KeyError(f"LinkedIn post not found: {post_id}")
+    meta = _own_post_meta(activity)
+    action_logs = list(meta.get("action_logs") or [])
+    action_logs.append(log)
+    meta["action_logs"] = action_logs[-LINKEDIN_POST_EXISTING_LIMIT:]
+    activity[LINKEDIN_OWN_POST_META_KEY] = meta
+    repo.put_activity(activity)
+
+
 def _put_own_post_from_raw(
     repo: DynamoRepository,
     user_id: str,
@@ -1522,7 +1990,7 @@ def _put_own_post_from_raw(
 ) -> dict[str, Any]:
     timestamp = now_iso()
     post_id = _post_id_from_raw(raw_post)
-    existing = repo.get_own_post(user_id, post_id) or {}
+    existing = _get_own_post_record(repo, user_id, post_id) or {}
     estimated_posted_at = _estimated_posted_at(raw_post)
     record = {
         **existing,
@@ -1546,7 +2014,7 @@ def _put_own_post_from_raw(
         "raw_metadata": {**dict(existing.get("raw_metadata") or {}), "last_intake_raw": raw_post},
         "status": "tracked",
     }
-    return repo.put_own_post(record)
+    return _save_own_post_record(repo, record)
 
 
 def track_published_linkedin_post(
@@ -1569,6 +2037,19 @@ def track_published_linkedin_post(
     return LinkedInPostPublishResponse.model_validate(_own_post_response(record).model_dump())
 
 
+def _own_post_sync_skip_reason(raw_post: dict[str, Any], window_hours: int) -> str:
+    if not str(raw_post.get("raw_text", "")).strip():
+        return "missing_post_text"
+    posted_at = _estimated_posted_at(raw_post)
+    if posted_at is None:
+        posted_at_text = str(raw_post.get("posted_at_text") or "").strip()
+        return f"unparseable_posted_at_text: {posted_at_text or 'empty'}"
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    if posted_at < cutoff:
+        return f"outside_{window_hours}_hour_window"
+    return ""
+
+
 def sync_recent_linkedin_posts(
     repo: DynamoRepository,
     request: SyncRecentOwnPostsRequest,
@@ -1589,14 +2070,22 @@ def sync_recent_linkedin_posts(
         )
 
     saved_posts: list[OwnPostResponse] = []
+    skipped_posts: list[dict[str, str]] = []
     checked_count = 0
     for post in posts:
         if not isinstance(post, dict):
             continue
         checked_count += 1
-        if not str(post.get("raw_text", "")).strip():
-            continue
-        if not _is_post_inside_window(post, request.window_hours):
+        skip_reason = _own_post_sync_skip_reason(post, request.window_hours)
+        if skip_reason:
+            skipped_posts.append(
+                {
+                    "reason": skip_reason,
+                    "post_url": str(post.get("post_url") or ""),
+                    "posted_at_text": str(post.get("posted_at_text") or ""),
+                    "text_preview": str(post.get("raw_text") or "")[:160],
+                }
+            )
             continue
         record = _put_own_post_from_raw(repo, request.user_id, post, source="direct")
         saved_posts.append(_own_post_response(record))
@@ -1606,7 +2095,9 @@ def sync_recent_linkedin_posts(
         user_id=request.user_id,
         checked_count=checked_count,
         saved_count=len(saved_posts),
+        skipped_count=len(skipped_posts),
         posts=saved_posts,
+        skipped_posts=skipped_posts,
     )
 
 
@@ -1618,7 +2109,10 @@ def list_linkedin_posts(
     limit: int | None = None,
 ) -> list[OwnPostResponse]:
     require_user(repo, user_id)
-    posts = [_own_post_response(post) for post in repo.list_own_posts(user_id, limit or LINKEDIN_POST_EXISTING_LIMIT)]
+    posts = [
+        _own_post_response(_own_post_record_from_activity(activity))
+        for activity in _own_post_activities(repo, user_id, limit or LINKEDIN_POST_EXISTING_LIMIT)
+    ]
     if source:
         posts = [post for post in posts if post.source == source]
     if window_hours:
@@ -1641,7 +2135,10 @@ def _merge_engager_record(
     user_id = str(post["user_id"])
     post_id = str(post["post_id"])
     profile_key = _engager_profile_key(raw_engager)
-    existing = repo.get_post_engager(user_id, post_id, profile_key) or {}
+    existing = next(
+        (engager for engager in _post_engager_records(repo, user_id, post_id) if engager.get("profile_key") == profile_key),
+        {},
+    )
     engagement_types = sorted(
         {
             str(item)
@@ -1676,7 +2173,7 @@ def _merge_engager_record(
         "source": str(raw_engager.get("source") or existing.get("source", "playwright")),
         "raw_metadata": raw_metadata,
     }
-    return repo.put_post_engager(record)
+    return _put_post_engager_record(repo, post, record)
 
 
 def scrape_linkedin_post_engagement_service(
@@ -1685,10 +2182,10 @@ def scrape_linkedin_post_engagement_service(
     request: ScrapePostEngagementRequest,
 ) -> PostEngagementScrapeResponse:
     require_user(repo, request.user_id)
-    post = repo.get_own_post(request.user_id, post_id)
+    post = _get_own_post_record(repo, request.user_id, post_id)
     if not post:
         raise KeyError(f"LinkedIn post not found: {post_id}")
-    post_url = str(post.get("post_url", ""))
+    post_url = _post_url_from_id(post_id, str(post.get("post_url", "")))
     if not post_url:
         raise ValueError("The tracked post has no post_url. Track or sync a LinkedIn URL before scraping engagement.")
 
@@ -1719,7 +2216,7 @@ def scrape_linkedin_post_engagement_service(
             "diagnostics": result.diagnostics,
         },
     }
-    repo.put_own_post(post)
+    _save_own_post_record(repo, post)
 
     return PostEngagementScrapeResponse(
         user_id=request.user_id,
@@ -1742,11 +2239,11 @@ def list_linkedin_post_engagers(
     limit: int | None = None,
 ) -> list[PostEngagerResponse]:
     require_user(repo, user_id)
-    if not repo.get_own_post(user_id, post_id):
+    if not _get_own_post_record(repo, user_id, post_id):
         raise KeyError(f"LinkedIn post not found: {post_id}")
     engagers = [
         _post_engager_response(engager)
-        for engager in repo.list_post_engagers(user_id, post_id, limit or LINKEDIN_POST_EXISTING_LIMIT)
+        for engager in _post_engager_records(repo, user_id, post_id)
     ]
     if engagement_type:
         normalized_type = engagement_type.strip().lower()
@@ -1766,7 +2263,7 @@ def list_linkedin_action_logs(
     limit: int | None = None,
 ) -> list[LinkedInActionLogResponse]:
     require_user(repo, user_id)
-    logs = [_action_log_response(log) for log in repo.list_action_logs(user_id, limit or LINKEDIN_POST_EXISTING_LIMIT)]
+    logs = [_action_log_response(log) for log in _action_log_records(repo, user_id)]
     if post_id:
         logs = [log for log in logs if log.post_id == post_id]
     if action_type:
@@ -1781,19 +2278,45 @@ def _target_engagers(
     post_id: str,
     profile_urls: list[str],
     engagement_types: list[str] | None = None,
+    include_explicit_missing: bool = False,
 ) -> list[PostEngagerResponse]:
-    if not repo.get_own_post(user_id, post_id):
+    post = _get_own_post_record(repo, user_id, post_id)
+    if not post:
         raise KeyError(f"LinkedIn post not found: {post_id}")
-    selected_keys = {_engager_profile_key(value) for value in profile_urls if str(value).strip()}
+    selected_profiles = [
+        (str(value).strip(), _engager_profile_key(value))
+        for value in profile_urls
+        if str(value).strip()
+    ]
+    selected_keys = {profile_key for _, profile_key in selected_profiles}
     allowed_types = {item.strip().lower() for item in engagement_types or [] if item.strip()}
     engagers = [
         _post_engager_response(engager)
-        for engager in repo.list_post_engagers(user_id, post_id, LINKEDIN_POST_EXISTING_LIMIT)
+        for engager in _post_engager_records(repo, user_id, post_id)
     ]
     if selected_keys:
         engagers = [engager for engager in engagers if engager.profile_key in selected_keys]
     if allowed_types:
         engagers = [engager for engager in engagers if allowed_types.intersection(engager.engagement_types)]
+    if include_explicit_missing and selected_profiles:
+        existing_keys = {engager.profile_key for engager in engagers}
+        for profile_url, profile_key in selected_profiles:
+            if profile_key in existing_keys:
+                continue
+            engagers.append(
+                PostEngagerResponse(
+                    user_post_id=_user_post_id(user_id, post_id),
+                    user_id=user_id,
+                    post_id=post_id,
+                    post_url=_post_url_from_id(post_id, str(post.get("post_url", ""))),
+                    profile_key=profile_key,
+                    profile_url=profile_url,
+                    scraped_at=now_iso(),
+                    source="explicit",
+                    raw_metadata={"explicit_target": True},
+                )
+            )
+            existing_keys.add(profile_key)
     return engagers
 
 
@@ -1809,7 +2332,7 @@ def _has_prior_action(
     action_type: str,
     post_id: str | None = None,
 ) -> bool:
-    for log in repo.list_action_logs(user_id, LINKEDIN_POST_EXISTING_LIMIT):
+    for log in _action_log_records(repo, user_id):
         if str(log.get("action_type")) != action_type:
             continue
         if str(log.get("profile_key")) != profile_key:
@@ -1855,7 +2378,7 @@ def _write_action_log(
         "finished_at": timestamp if status in {"sent", "skipped", "failed"} else "",
         "raw_metadata": raw_metadata or {},
     }
-    repo.put_action_log(log)
+    _append_action_log(repo, user_id, post_id, log)
     return LinkedInActionResult(
         profile_url=engager.profile_url,
         profile_key=engager.profile_key,
@@ -1873,7 +2396,7 @@ def send_comment_replies(
     request: CommentReplyActionRequest,
 ) -> LinkedInActionBatchResponse:
     require_user(repo, request.user_id)
-    post = repo.get_own_post(request.user_id, request.post_id)
+    post = _get_own_post_record(repo, request.user_id, request.post_id)
     if not post:
         raise KeyError(f"LinkedIn post not found: {request.post_id}")
     targets = _target_engagers(repo, request.user_id, request.post_id, request.profile_urls)
@@ -2065,7 +2588,13 @@ def send_dms(
     request: DmActionRequest,
 ) -> LinkedInActionBatchResponse:
     require_user(repo, request.user_id)
-    targets = _target_engagers(repo, request.user_id, request.post_id, request.profile_urls)
+    targets = _target_engagers(
+        repo,
+        request.user_id,
+        request.post_id,
+        request.profile_urls,
+        include_explicit_missing=True,
+    )
     results: list[LinkedInActionResult] = []
 
     for engager in targets:
@@ -2083,7 +2612,8 @@ def send_dms(
                 )
             )
             continue
-        if not _is_first_degree(engager.connection_degree):
+        explicit_target = bool(engager.raw_metadata.get("explicit_target"))
+        if not explicit_target and not _is_first_degree(engager.connection_degree):
             results.append(
                 _write_action_log(
                     repo,

@@ -135,25 +135,42 @@ Suggested response:
 
 ## Data Model
 
-### `linkedin_post_generator_own_posts`
+Implementation uses the existing DynamoDB tables only. No new tables are
+required for this phase.
 
-Partition key:
-
-```text
-user_id
-```
-
-Sort key:
+Own LinkedIn posts are stored in the existing activities table with a reserved
+backend-only creator id:
 
 ```text
-post_id
+creator_id = "__linkedin_own_posts__"
+user_creator_id = "{user_id}#__linkedin_own_posts__"
+post_id = LinkedIn activity URN or generated fallback id
 ```
 
-Fields:
+The activity row keeps the normal activity fields so existing repository
+methods work:
 
+- user_creator_id
 - user_id
+- creator_id
 - post_id
 - post_url
+- raw_text
+- author_name
+- posted_at_text
+- fetched_at
+- content_hash
+- source: `linkedin_own_post`
+- is_new: `false`
+
+All own-post specific data is namespaced under:
+
+```text
+linkedin_own_post
+```
+
+Fields inside `linkedin_own_post`:
+
 - source: `platform | direct`
 - text
 - created_at_text
@@ -165,80 +182,33 @@ Fields:
 - impression_count
 - scrape_status
 - raw_metadata
+- engagers
+- action_logs
 
-### `linkedin_post_generator_post_engagers`
+### Engagers
 
-One row per `(post, person)`, not one row per engagement event.
-
-Partition key:
-
-```text
-user_post_id = "{user_id}#{post_id}"
-```
-
-Sort key:
+Engagers are stored inside the own post activity row:
 
 ```text
-profile_url or profile_urn
+linkedin_own_post.engagers[profile_key]
 ```
-
-Fields:
-
-- user_id
-- post_id
-- post_url
-- profile_url
-- profile_urn
-- name
-- headline
-- connection_degree
-- engagement_types: `["like", "comment"]`
-- comment_text
-- comment_permalink
-- comment_urn
-- comment_text_hash
-- comment_timestamp_text
-- scraped_at
-- source
-- raw_metadata
 
 Important rule:
 
-If one person both likes and comments, update the same engager row and merge
+If one person both likes and comments, update the same engager object and merge
 `engagement_types` instead of creating duplicate prospects.
 
-### `linkedin_post_generator_linkedin_action_logs`
+### Action Logs
 
-Partition key:
-
-```text
-user_id
-```
-
-Sort key:
+Action logs are stored inside the own post activity row:
 
 ```text
-action_id
+linkedin_own_post.action_logs[]
 ```
 
-Fields:
-
-- action_id
-- user_id
-- post_id
-- profile_url
-- action_type: `comment_reply | connection_request | dm`
-- requested_text
-- final_text
-- status: `queued | running | sent | skipped | failed`
-- skip_reason
-- error_message
-- created_at
-- started_at
-- finished_at
-
-Use this table to avoid sending the same connection request or DM repeatedly
-across multiple posts.
+Use these logs to avoid sending the same connection request or DM repeatedly
+across multiple posts. For account-wide duplicate checks, the backend scans the
+reserved own-post activity rows for the current user.
 
 ## Engagement Scraping APIs
 
@@ -393,14 +363,15 @@ Suggested first-pass caps:
 
 ## Suggested Build Order
 
-1. Add own-post table and repository methods.
+1. Store own-post records in the existing activities table under the reserved
+   `__linkedin_own_posts__` creator id.
 2. Add `POST /linkedin/posts/sync-recent` for direct LinkedIn post intake.
 3. Add `GET /users/{user_id}/linkedin/posts`.
 4. Add post engagement scraper for comments first, including stable comment
    references.
-5. Add likes scraper and merge likers into the same engager table.
+5. Add likes scraper and merge likers into the same per-post engager map.
 6. Add `GET /linkedin/posts/{post_id}/engagers`.
-7. Add action log table.
+7. Add per-post action logs inside the existing activity row.
 8. Add comment reply API.
 9. Add connection request API for likers/commenters.
 10. Add DM API for first-degree engagers.
@@ -421,55 +392,3 @@ Suggested first-pass caps:
 - Action logs prevent duplicate outreach.
 - All action endpoints return per-profile sent/skipped/failed results.
 - FastAPI docs can exercise every backend workflow without frontend UI.
-
-
-
-
-
-
-=================================================================
-Done. Backend-only changes, no UI touched.
-Implemented from twelfth_plan_draft.md:
-Added own LinkedIn post tracking/sync APIs.
-Added post engagement scrape API for likes/comments.
-Added stored engagers model with one row per person per post.
-Added dry-run safe action APIs for:comment replies
-connection requests
-DMs to first-degree engagers
-
-Added action logs to prevent duplicate real connection requests/DMs.
-Added DynamoDB support for:*_own_posts
-*_post_engagers
-*_linkedin_action_logs
-
-New Swagger routes:
-POST /linkedin/posts/publish
-POST /linkedin/posts/sync-recent
-GET  /users/{user_id}/linkedin/posts
-POST /linkedin/posts/{post_id}/engagement/scrape
-GET  /linkedin/posts/{post_id}/engagers
-GET  /users/{user_id}/linkedin/action-logs
-POST /linkedin/actions/comment-replies
-POST /linkedin/actions/connection-requests
-POST /linkedin/actions/dms
-Key files changed:
-[main.py](D:/Linkedin_Post_Generator/backend/app/api/main.py)
-[schemas.py](D:/Linkedin_Post_Generator/backend/app/api/schemas.py)
-[services.py](D:/Linkedin_Post_Generator/backend/app/api/services.py)
-[dynamodb.py](D:/Linkedin_Post_Generator/backend/app/db/dynamodb.py)
-[linkedin_post_engagement.py](D:/Linkedin_Post_Generator/backend/app/linkedin_post_engagement.py)
-[linkedin_post_actions.py](D:/Linkedin_Post_Generator/backend/app/linkedin_post_actions.py)
-Validation passed:
-13 passed in 12.06s
-FastAPI import check also passed, and all new LinkedIn routes are visible. For testing actions, keep dry_run: true first. Real Playwright write actions need scraping enabled plus burner/authenticated LinkedIn session.
-
-Edited 7 files+2,117-148Review changesUndoReview
-
-backend/app/api/main.pybackend/app/api/main.py+200-56
-backend/app/api/schemas.pybackend/app/api/schemas.py+176-10
-backend/app/api/services.pybackend/app/api/services.py+822-30
-backend/app/db/dynamodb.pybackend/app/db/dynamodb.py+57-16
-backend/app/linkedin_post_actions.pybackend/app/linkedin_post_actions.py+256-0
-backend/app/linkedin_post_engagement.pybackend/app/linkedin_post_engagement.py+367-0
-backend/test/test_scripts/test_fastapi_services.pybackend/test/test_scripts/test_fastapi_services.py+239-36
-Collapse files
