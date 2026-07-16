@@ -135,25 +135,42 @@ Suggested response:
 
 ## Data Model
 
-### `linkedin_post_generator_own_posts`
+Implementation uses the existing DynamoDB tables only. No new tables are
+required for this phase.
 
-Partition key:
-
-```text
-user_id
-```
-
-Sort key:
+Own LinkedIn posts are stored in the existing activities table with a reserved
+backend-only creator id:
 
 ```text
-post_id
+creator_id = "__linkedin_own_posts__"
+user_creator_id = "{user_id}#__linkedin_own_posts__"
+post_id = LinkedIn activity URN or generated fallback id
 ```
 
-Fields:
+The activity row keeps the normal activity fields so existing repository
+methods work:
 
+- user_creator_id
 - user_id
+- creator_id
 - post_id
 - post_url
+- raw_text
+- author_name
+- posted_at_text
+- fetched_at
+- content_hash
+- source: `linkedin_own_post`
+- is_new: `false`
+
+All own-post specific data is namespaced under:
+
+```text
+linkedin_own_post
+```
+
+Fields inside `linkedin_own_post`:
+
 - source: `platform | direct`
 - text
 - created_at_text
@@ -165,80 +182,33 @@ Fields:
 - impression_count
 - scrape_status
 - raw_metadata
+- engagers
+- action_logs
 
-### `linkedin_post_generator_post_engagers`
+### Engagers
 
-One row per `(post, person)`, not one row per engagement event.
-
-Partition key:
-
-```text
-user_post_id = "{user_id}#{post_id}"
-```
-
-Sort key:
+Engagers are stored inside the own post activity row:
 
 ```text
-profile_url or profile_urn
+linkedin_own_post.engagers[profile_key]
 ```
-
-Fields:
-
-- user_id
-- post_id
-- post_url
-- profile_url
-- profile_urn
-- name
-- headline
-- connection_degree
-- engagement_types: `["like", "comment"]`
-- comment_text
-- comment_permalink
-- comment_urn
-- comment_text_hash
-- comment_timestamp_text
-- scraped_at
-- source
-- raw_metadata
 
 Important rule:
 
-If one person both likes and comments, update the same engager row and merge
+If one person both likes and comments, update the same engager object and merge
 `engagement_types` instead of creating duplicate prospects.
 
-### `linkedin_post_generator_linkedin_action_logs`
+### Action Logs
 
-Partition key:
-
-```text
-user_id
-```
-
-Sort key:
+Action logs are stored inside the own post activity row:
 
 ```text
-action_id
+linkedin_own_post.action_logs[]
 ```
 
-Fields:
-
-- action_id
-- user_id
-- post_id
-- profile_url
-- action_type: `comment_reply | connection_request | dm`
-- requested_text
-- final_text
-- status: `queued | running | sent | skipped | failed`
-- skip_reason
-- error_message
-- created_at
-- started_at
-- finished_at
-
-Use this table to avoid sending the same connection request or DM repeatedly
-across multiple posts.
+Use these logs to avoid sending the same connection request or DM repeatedly
+across multiple posts. For account-wide duplicate checks, the backend scans the
+reserved own-post activity rows for the current user.
 
 ## Engagement Scraping APIs
 
@@ -393,14 +363,15 @@ Suggested first-pass caps:
 
 ## Suggested Build Order
 
-1. Add own-post table and repository methods.
+1. Store own-post records in the existing activities table under the reserved
+   `__linkedin_own_posts__` creator id.
 2. Add `POST /linkedin/posts/sync-recent` for direct LinkedIn post intake.
 3. Add `GET /users/{user_id}/linkedin/posts`.
 4. Add post engagement scraper for comments first, including stable comment
    references.
-5. Add likes scraper and merge likers into the same engager table.
+5. Add likes scraper and merge likers into the same per-post engager map.
 6. Add `GET /linkedin/posts/{post_id}/engagers`.
-7. Add action log table.
+7. Add per-post action logs inside the existing activity row.
 8. Add comment reply API.
 9. Add connection request API for likers/commenters.
 10. Add DM API for first-degree engagers.

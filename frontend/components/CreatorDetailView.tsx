@@ -24,7 +24,8 @@ import {
   fetchCreatorProfile,
   fetchUserData,
 } from "@/lib/api";
-import { compactDate, displayName, initials, previewText, sortThreads } from "@/lib/format";
+import { compactDate, displayName, initials, sortThreads } from "@/lib/format";
+import { formatExperienceForClipboard, parseExperience } from "@/lib/profileExperience";
 import type { ActivityResponse, CreatorProfileDetailsResponse, CreatorResponse, UserDataResponse } from "@/lib/types";
 
 export function CreatorDetailView({ creatorId }: { creatorId: string }) {
@@ -99,21 +100,18 @@ export function CreatorDetailView({ creatorId }: { creatorId: string }) {
   }
 
   async function copyProfileInfo() {
-    await navigator.clipboard.writeText(
-      formatCreatorProfileForClipboard({
-        name: creatorName,
-        headline: profileUnavailable ? "Profile not found or unavailable" : profile?.headline || "Not saved",
-        about: profileUnavailable ? "Profile not found or unavailable" : profile?.about || "Not saved",
-        experience: profileUnavailable
-          ? "Profile not found or unavailable"
-          : profile?.experience?.length
-            ? profile.experience.join("\n")
-            : "Not saved",
-        location: profileUnavailable ? "Profile not found" : profile?.location || "Not saved",
-        linkedIn: profileUrl || "Not saved",
-        email: profileEmail || "Not saved",
-      }),
-    );
+    const content = formatCreatorProfileForClipboard({
+      name: creatorName,
+      headline: profileUnavailable ? "Profile not found or unavailable" : profile?.headline || "Not saved",
+      about: profileUnavailable ? "Profile not found or unavailable" : profile?.about || "Not saved",
+      experience: profileUnavailable
+        ? "Profile not found or unavailable"
+        : formatExperienceForClipboard(profile?.experience ?? []) || "Not saved",
+      location: profileUnavailable ? "Profile not found" : profile?.location || "Not saved",
+      linkedIn: profileUrl || "Not saved",
+      email: profileEmail || "Not saved",
+    });
+    await writeRichClipboard(content.text, content.html);
     showSuccess("Creator information copied");
   }
 
@@ -198,18 +196,13 @@ export function CreatorDetailView({ creatorId }: { creatorId: string }) {
             {experienceItems.length ? (
               <div className="profile-experience-list">
                 {experienceItems.map((item, index) => (
-                  <div className="experience-row" key={`${item.title}-${item.company}-${index}`}>
+                  <div className="experience-row" key={`${item.heading}-${index}`}>
                     <span><Building2 size={15} /></span>
                     <div>
-                      <strong>{item.title}</strong>
-                      {item.company ? <em>{item.company}</em> : null}
-                      {item.period || item.location ? (
-                        <small>
-                          {item.period}
-                          {item.period && item.location ? " - " : ""}
-                          {item.location}
-                        </small>
-                      ) : null}
+                      <strong>{item.heading}</strong>
+                      {item.details.map((line, lineIndex) => (
+                        <small key={`${line}-${lineIndex}`}>{line}</small>
+                      ))}
                     </div>
                   </div>
                 ))}
@@ -330,13 +323,6 @@ function ProfileBlock({
   );
 }
 
-type ExperienceItem = {
-  title: string;
-  company: string;
-  period: string;
-  location: string;
-};
-
 function profileLooksUnavailable(profile: CreatorProfileDetailsResponse | null) {
   if (!profile) return false;
   return isBadScrapedText(profile.name) || isBadScrapedText(profile.headline);
@@ -368,28 +354,19 @@ function formatCreatorProfileForClipboard(profile: {
   linkedIn: string;
   email: string;
 }) {
-  return [
-    "Name",
-    profile.name,
-    "",
-    "Headline",
-    profile.headline,
-    "",
-    "About",
-    profile.about,
-    "",
-    "Experience",
-    profile.experience,
-    "",
-    "Location",
-    profile.location,
-    "",
-    "LinkedIn",
-    profile.linkedIn,
-    "",
-    "Email",
-    profile.email,
-  ].join("\n");
+  const sections = [
+    ["Name", profile.name],
+    ["Headline", profile.headline],
+    ["About", profile.about],
+    ["Location", profile.location],
+    ["LinkedIn", profile.linkedIn],
+    ["Email", profile.email],
+    ["Experience", profile.experience],
+  ];
+  return {
+    text: sections.flatMap(([label, value]) => [label, value, ""]).join("\n").trim(),
+    html: sections.map(([label, value]) => htmlSection(label, value)).join(""),
+  };
 }
 
 type ScrapeHistoryRow = {
@@ -451,44 +428,31 @@ function scrapeId(creatorId: string, value: string) {
   return `SCR-${creatorId.slice(0, 4).toUpperCase()}-${stamp}`;
 }
 
-function parseExperience(experience: string[]): ExperienceItem[] {
-  const lines = experience
-    .flatMap((item) => item.split(/\n+/))
-    .map((item) => item.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-  const datePattern = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b|\b(?:19|20)\d{2}\b|Present/i;
-  const items: ExperienceItem[] = [];
+function htmlSection(label: string, value: string) {
+  return `<p><strong>${escapeHtml(label)}</strong><br />${escapeHtml(value).replace(/\n/g, "<br />")}</p>`;
+}
 
-  for (let index = 0; index < lines.length - 1 && items.length < 8; index += 1) {
-    const title = lines[index];
-    const company = lines[index + 1] || "";
-    const period = lines[index + 2] || "";
-    const location = lines[index + 3] || "";
-    const looksLikeTitle = title.length <= 90 && !datePattern.test(title) && !title.includes("http") && !title.endsWith(".");
-    const looksLikeCompany = company.length <= 100 && !company.includes("http") && !company.endsWith(".");
-    const hasDateNearby = datePattern.test(company) || datePattern.test(period);
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-    if (!looksLikeTitle || !looksLikeCompany || !hasDateNearby) continue;
-
-    items.push({
-      title,
-      company: datePattern.test(company) ? "" : company,
-      period: datePattern.test(company) ? company : period,
-      location: !datePattern.test(location) && location.length <= 90 ? location : "",
-    });
-    index += datePattern.test(company) ? 1 : 2;
+async function writeRichClipboard(text: string, html: string) {
+  if (typeof window !== "undefined" && "ClipboardItem" in window && navigator.clipboard.write) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        }),
+      ]);
+      return;
+    } catch {
+      // Fall back to plain text when rich clipboard writes are not accepted.
+    }
   }
-
-  if (items.length) return items;
-
-  return experience
-    .map((item) => item.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .slice(0, 5)
-    .map((item) => ({
-      title: previewText(item, 90),
-      company: "",
-      period: "",
-      location: "",
-    }));
+  await navigator.clipboard.writeText(text);
 }

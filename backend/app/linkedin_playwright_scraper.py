@@ -57,6 +57,23 @@ def _looks_like_invalid_profile_details(name: str, headline: str, location: str)
     return any(phrase in combined for phrase in invalid_phrases) or bool(re.search(r"\b\d+\s+notifications?\b", combined))
 
 
+def _looks_like_invalid_location(text: str) -> bool:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return False
+    if len(cleaned) > 90:
+        return True
+    if "|" in cleaned:
+        return True
+    return bool(
+        re.search(
+            r"\b(started|served|people|get served|infrastructure|organisations?|organizations?|experience|followers?|connections?)\b",
+            cleaned,
+            flags=re.I,
+        )
+    )
+
+
 def _content_hash(text: str) -> str:
     return hashlib.sha256(_clean_text(text).lower().encode("utf-8")).hexdigest()
 
@@ -93,11 +110,9 @@ def _activity_urn(*values: object) -> str:
 
 
 def _post_url(url: str, activity_urn: str) -> str:
-    if url:
-        return url
     if activity_urn:
         return f"https://www.linkedin.com/feed/update/{activity_urn}/"
-    return ""
+    return url
 
 
 def _body_text(page: Any) -> str:
@@ -226,13 +241,21 @@ def _extract_candidates(page: Any) -> list[dict[str, str]]:
           || (root.querySelector('[data-urn]') && root.querySelector('[data-urn]').getAttribute('data-urn'))
           || '';
         const authorNode = root.querySelector('.update-components-actor__name, .feed-shared-actor__name, [data-test-app-aware-link] span[aria-hidden="true"]');
-        const timeNode = root.querySelector('time, .update-components-actor__sub-description, .feed-shared-actor__sub-description');
+        const timeCandidates = [];
+        root.querySelectorAll('time, [datetime], .update-components-actor__sub-description, .feed-shared-actor__sub-description, .update-components-actor__supplementary-actor-info').forEach((node) => {
+          [node.innerText, node.getAttribute('datetime'), node.getAttribute('aria-label'), node.getAttribute('title')].forEach((value) => {
+            if (value && value.trim()) timeCandidates.push(value.trim());
+          });
+        });
+        const timePattern = /(just now|moments ago|seconds ago|a minute ago|an hour ago|yesterday|\\b\\d+\\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\\b)/i;
+        const rootTimeMatch = (root.innerText || '').match(timePattern);
+        const postedAtText = (timeCandidates.find((value) => timePattern.test(value)) || (rootTimeMatch && rootTimeMatch[0]) || timeCandidates[0] || '').trim();
         candidates.push({
           raw_text: rawText,
           post_url: links[0] || '',
           data_urn: dataUrn,
           author_name: authorNode ? authorNode.innerText.trim() : '',
-          posted_at_text: timeNode ? timeNode.innerText.trim() : ''
+          posted_at_text: postedAtText
         });
       });
       return candidates;
@@ -476,28 +499,64 @@ def _extract_experience_from_page(page: Any) -> list[str]:
         .split('\n')
         .map((part) => clean(part))
         .filter(Boolean);
+      const isNoise = (value) => {
+        const lower = clean(value).toLowerCase();
+        if (!lower) return true;
+        if (['show all', 'show more', 'see more', 'show less', '...'].includes(lower)) return true;
+        if (/^(activate to view larger image|opens profile photo|company logo)$/i.test(lower)) return true;
+        return false;
+      };
+      const uniqLines = (values) => {
+        const result = [];
+        values.forEach((value) => {
+          if (!isNoise(value) && result[result.length - 1] !== value) result.push(value);
+        });
+        return result;
+      };
+      const hasDateRange = (value) => (
+        /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*[-–]\s*(?:Present|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b/i
+          .test(value || '')
+      );
       const roots = new Set();
       const selectors = [
+        'main [data-view-name="profile-component-entity"]',
         'main li.pvs-list__paged-list-item',
-        'main section li',
+        'main li',
         '.experience__list li',
         '.profile-section-card'
       ];
 
       for (const selector of selectors) {
-        document.querySelectorAll(selector).forEach((node) => roots.add(node));
+        document.querySelectorAll(selector).forEach((node) => {
+          if (node.closest('aside')) return;
+          const text = clean(node.innerText);
+          if (!text || text.length < 12) return;
+          if (selector === 'main li' && !hasDateRange(text)) return;
+          const nestedExperienceItems = Array.from(node.querySelectorAll('li'))
+            .filter((child) => child !== node && hasDateRange(clean(child.innerText)));
+          if (nestedExperienceItems.length) return;
+          roots.add(node);
+        });
       }
 
       const items = [];
       roots.forEach((node) => {
-        const text = clean(node.innerText);
-        if (!text || text.length < 12) return;
-        const lower = text.toLowerCase();
-        if (lower.includes('show all') || lower.includes('skills:')) return;
-        items.push(text);
+        const itemLines = uniqLines(lines(node));
+        if (itemLines.length < 2) return;
+        const lower = itemLines.join(' ').toLowerCase();
+        if (lower.includes('more profiles for you') || lower.includes('people also viewed')) return;
+        items.push(itemLines.join('\n'));
       });
 
-      if (items.length) return Array.from(new Set(items)).slice(0, 12);
+      if (items.length) {
+        const seen = new Set();
+        return items.filter((item) => {
+          const key = item.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).slice(0, 25);
+      }
 
       const sections = Array.from(document.querySelectorAll('main section, section'));
       for (const section of sections) {
@@ -664,6 +723,8 @@ def fetch_profile_details(profile_url: str) -> dict[str, Any]:
                 headline = location
                 location = ""
             if location == headline:
+                location = ""
+            if _looks_like_invalid_location(location):
                 location = ""
             if _looks_like_invalid_profile_details(name, headline, location):
                 return _error(

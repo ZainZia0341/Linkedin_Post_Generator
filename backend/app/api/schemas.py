@@ -183,6 +183,174 @@ class RecentActivitiesResponse(BaseModel):
     activities: list[ActivityResponse] = Field(default_factory=list)
 
 
+class LinkedInPostPublishRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    thread_id: str = Field(default="", description="Optional generated thread ID that produced this post.")
+    post_text: str = Field(default="", description="Final LinkedIn post text to track.")
+    post_url: str = Field(default="", description="LinkedIn feed/update URL if already known.")
+    post_id: str = Field(default="", description="LinkedIn post URN/activity ID if already known.")
+    source: str = Field(default="platform", description="platform or direct.")
+
+
+class OwnPostResponse(BaseModel):
+    user_id: str
+    post_id: str
+    post_url: str = ""
+    source: str = "platform"
+    text: str = ""
+    created_at_text: str = ""
+    estimated_posted_at: str = ""
+    first_seen_at: str = ""
+    last_scraped_at: str = ""
+    reaction_count: int = 0
+    comment_count: int = 0
+    impression_count: int = 0
+    scrape_status: str = ""
+    raw_metadata: dict[str, Any] = Field(default_factory=dict)
+    status: str = "tracked"
+
+
+class LinkedInPostPublishResponse(OwnPostResponse):
+    pass
+
+
+class SyncRecentOwnPostsRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    profile_url: str | None = Field(
+        default=None,
+        description="Optional LinkedIn profile URL. If omitted, the backend tries to read it from the user profile.",
+    )
+    window_hours: int = Field(default=72, ge=1, le=72)
+    max_posts: int = Field(default=30, ge=1, le=100)
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
+
+
+class SyncRecentOwnPostsResponse(BaseModel):
+    user_id: str
+    checked_count: int = 0
+    saved_count: int = 0
+    skipped_count: int = 0
+    posts: list[OwnPostResponse] = Field(default_factory=list)
+    skipped_posts: list[dict[str, str]] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ScrapePostEngagementRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    include_likes: bool = True
+    include_comments: bool = True
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
+
+
+class PostEngagerResponse(BaseModel):
+    user_post_id: str
+    user_id: str
+    post_id: str
+    post_url: str = ""
+    profile_key: str
+    profile_url: str = ""
+    profile_urn: str = ""
+    name: str = ""
+    headline: str = ""
+    connection_degree: str = ""
+    engagement_types: list[str] = Field(default_factory=list)
+    comment_text: str = ""
+    comment_permalink: str = ""
+    comment_urn: str = ""
+    comment_text_hash: str = ""
+    comment_timestamp_text: str = ""
+    scraped_at: str = ""
+    source: str = "playwright"
+    raw_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PostEngagementScrapeResponse(BaseModel):
+    user_id: str
+    post_id: str
+    like_count: int = 0
+    comment_count: int = 0
+    engagers_saved: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
+    engagers: list[PostEngagerResponse] = Field(default_factory=list)
+
+
+class CommentReplyActionRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    post_id: str
+    profile_urls: list[str] = Field(
+        default_factory=list,
+        description="Optional selected profile URLs. Empty means all stored commenters for the post.",
+    )
+    reply_text: str = Field(default="Thank you for sharing your thoughts.")
+    dry_run: bool = Field(
+        default=True,
+        description="When true, only validates targets and writes skipped action logs without touching LinkedIn.",
+    )
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
+
+
+class ConnectionRequestActionRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    post_id: str
+    profile_urls: list[str] = Field(
+        default_factory=list,
+        description="Optional selected profile URLs. Empty means all stored likers/commenters for the post.",
+    )
+    engagement_types: list[str] = Field(default_factory=lambda: ["like", "comment"])
+    note: str = ""
+    dry_run: bool = Field(default=True)
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
+
+
+class DmActionRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    post_id: str
+    profile_urls: list[str] = Field(
+        default_factory=list,
+        description="Optional selected profile URLs. Empty means all stored first-degree engagers for the post.",
+    )
+    message: str
+    dry_run: bool = Field(default=True)
+    launch_delay_seconds: float = Field(default=3, ge=0, le=60)
+
+
+class LinkedInActionResult(BaseModel):
+    profile_url: str = ""
+    profile_key: str = ""
+    action_id: str = ""
+    action_type: str
+    status: str
+    skip_reason: str = ""
+    error_message: str = ""
+    final_text: str = ""
+
+
+class LinkedInActionBatchResponse(BaseModel):
+    user_id: str
+    post_id: str
+    action_type: str
+    results: list[LinkedInActionResult] = Field(default_factory=list)
+
+
+class LinkedInActionLogResponse(BaseModel):
+    action_id: str
+    user_id: str
+    post_id: str = ""
+    profile_url: str = ""
+    profile_key: str = ""
+    action_type: str
+    requested_text: str = ""
+    final_text: str = ""
+    status: str
+    skip_reason: str = ""
+    error_message: str = ""
+    created_at: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    raw_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class BulkCreatorImportResponse(BaseModel):
     user_id: str
     total_urls: int = 0
@@ -225,10 +393,40 @@ class ScrapeCreatorProfilesResponse(BaseModel):
     errors: list[dict[str, str]] = Field(default_factory=list)
 
 
+class ScrapeJobStartResponse(BaseModel):
+    job_id: str
+    job_type: str
+    user_id: str
+    status: str = "queued"
+    status_url: str
+    total_creators: int = 0
+    created_at: str = ""
+
+
+class ScrapeJobStatusResponse(BaseModel):
+    job_id: str
+    job_type: str
+    user_id: str
+    status: str
+    created_at: str = ""
+    started_at: str = ""
+    updated_at: str = ""
+    completed_at: str = ""
+    total_creators: int = 0
+    scraped_creators: int = 0
+    total_posts: int = 0
+    scraped_profiles: int = 0
+    current_creator_id: str = ""
+    message: str = ""
+    errors: list[dict[str, str]] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
 class DashboardStatsResponse(BaseModel):
     creator_count: int = 0
     thread_count: int = 0
     activity_count: int = 0
+    total_scraped_posts_count: int = 0
     new_posts_today_count: int = 0
     new_posts_from_last_scrape_count: int = 0
     needs_scraping_count: int = 0

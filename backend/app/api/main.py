@@ -12,25 +12,40 @@ from app.api.schemas import (
     BrainstormResponse,
     BulkCreatorImportResponse,
     BulkCreatorPreviewResponse,
+    CommentReplyActionRequest,
     CommentResponse,
     CommentedActivityResponse,
+    ConnectionRequestActionRequest,
     CreatorCreateRequest,
     CreatorProfileDetailsResponse,
     CreatorResponse,
     DeleteResponse,
+    DmActionRequest,
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
-    ModifyCommentRequest,
+    LinkedInActionBatchResponse,
+    LinkedInActionLogResponse,
+    LinkedInPostPublishRequest,
+    LinkedInPostPublishResponse,
     MarkCommentedRequest,
+    ModifyCommentRequest,
     ModifyPostRequest,
+    OwnPostResponse,
+    PostEngagementScrapeResponse,
+    PostEngagerResponse,
     RecentActivitiesResponse,
     RecentScrapeCreatorsRequest,
     RecentScrapeCreatorsResponse,
     ScrapeCreatorProfilesRequest,
     ScrapeCreatorProfilesResponse,
+    ScrapeJobStartResponse,
+    ScrapeJobStatusResponse,
+    ScrapePostEngagementRequest,
     ScrapeCreatorsRequest,
     ScrapeCreatorsResponse,
+    SyncRecentOwnPostsRequest,
+    SyncRecentOwnPostsResponse,
     ThreadResponse,
     ThreadSummary,
     UserCreateRequest,
@@ -46,6 +61,7 @@ from app.api.services import (
     build_dashboard_stats,
     create_creator,
     create_user,
+    delete_creator_with_activities,
     generate_comment,
     generate_from_activity,
     generate_post,
@@ -53,6 +69,9 @@ from app.api.services import (
     import_creators_from_file,
     list_commented_activities,
     list_all_activities,
+    list_linkedin_action_logs,
+    list_linkedin_post_engagers,
+    list_linkedin_posts,
     list_creator_profile_details,
     list_recent_activities_from_db,
     mark_activity_commented,
@@ -61,9 +80,18 @@ from app.api.services import (
     preview_creators_from_file,
     scrape_creator_profile_details,
     scrape_creators_recent_24h,
+    scrape_linkedin_post_engagement_service,
     seed_default_users,
+    send_comment_replies,
+    send_connection_requests,
+    send_dms,
+    get_scrape_job,
+    start_profile_scrape_job,
+    start_recent_scrape_job,
+    sync_recent_linkedin_posts,
     thread_response,
     thread_summary,
+    track_published_linkedin_post,
     update_user,
     user_response,
 )
@@ -194,7 +222,12 @@ def get_user_data(
     creators = [CreatorResponse.model_validate(creator) for creator in creator_records]
     threads = [thread_summary(thread) for thread in thread_records]
     activities = list_all_activities(repo, user_id, limit)
-    dashboard_stats = build_dashboard_stats(creator_records, thread_records, activities)
+    dashboard_stats = build_dashboard_stats(
+        creator_records,
+        thread_records,
+        activities,
+        existing_stats=dict(user.get("dashboard_stats") or {}),
+    )
     repo.put_user({**user, "dashboard_stats": dashboard_stats.model_dump()})
     return UserDataResponse(
         user=user_response(user),
@@ -321,6 +354,128 @@ def delete_thread(
     return DeleteResponse(ok=True, message=f"Deleted thread {thread_id}.")
 
 
+@app.post("/linkedin/posts/publish", response_model=LinkedInPostPublishResponse)
+def track_linkedin_post_endpoint(
+    payload: LinkedInPostPublishRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> LinkedInPostPublishResponse:
+    try:
+        return track_published_linkedin_post(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/linkedin/posts/sync-recent", response_model=SyncRecentOwnPostsResponse)
+def sync_recent_linkedin_posts_endpoint(
+    payload: SyncRecentOwnPostsRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> SyncRecentOwnPostsResponse:
+    _require_scraping_enabled()
+    try:
+        return sync_recent_linkedin_posts(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/users/{user_id}/linkedin/posts", response_model=list[OwnPostResponse])
+def list_linkedin_posts_endpoint(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    source: str | None = Query(default=None),
+    window_hours: int | None = Query(default=72, ge=1, le=72),
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=500),
+) -> list[OwnPostResponse]:
+    try:
+        return list_linkedin_posts(repo, user_id, source, window_hours, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/linkedin/posts/{post_id}/engagement/scrape", response_model=PostEngagementScrapeResponse)
+def scrape_linkedin_post_engagement_endpoint(
+    post_id: str,
+    payload: ScrapePostEngagementRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> PostEngagementScrapeResponse:
+    _require_scraping_enabled()
+    try:
+        return scrape_linkedin_post_engagement_service(repo, post_id, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/linkedin/posts/{post_id}/engagers", response_model=list[PostEngagerResponse])
+def list_linkedin_post_engagers_endpoint(
+    post_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    user_id: str = Query(...),
+    engagement_type: str | None = Query(default=None),
+    connection_degree: str | None = Query(default=None),
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=500),
+) -> list[PostEngagerResponse]:
+    try:
+        return list_linkedin_post_engagers(repo, user_id, post_id, engagement_type, connection_degree, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/users/{user_id}/linkedin/action-logs", response_model=list[LinkedInActionLogResponse])
+def list_linkedin_action_logs_endpoint(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    post_id: str | None = Query(default=None),
+    action_type: str | None = Query(default=None),
+    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=500),
+) -> list[LinkedInActionLogResponse]:
+    try:
+        return list_linkedin_action_logs(repo, user_id, post_id, action_type, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/linkedin/actions/comment-replies", response_model=LinkedInActionBatchResponse)
+def send_comment_replies_endpoint(
+    payload: CommentReplyActionRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> LinkedInActionBatchResponse:
+    if not payload.dry_run:
+        _require_scraping_enabled()
+    try:
+        return send_comment_replies(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/linkedin/actions/connection-requests", response_model=LinkedInActionBatchResponse)
+def send_connection_requests_endpoint(
+    payload: ConnectionRequestActionRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> LinkedInActionBatchResponse:
+    if not payload.dry_run:
+        _require_scraping_enabled()
+    try:
+        return send_connection_requests(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/linkedin/actions/dms", response_model=LinkedInActionBatchResponse)
+def send_dms_endpoint(
+    payload: DmActionRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> LinkedInActionBatchResponse:
+    if not payload.dry_run:
+        _require_scraping_enabled()
+    try:
+        return send_dms(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
 @app.post("/creators", response_model=CreatorResponse)
 def add_creator(
     payload: CreatorCreateRequest,
@@ -376,6 +531,18 @@ def scrape_creator_profiles_endpoint(
         raise _not_found(exc) from exc
 
 
+@app.post("/scrape-jobs/creators/profile-details", response_model=ScrapeJobStartResponse)
+def start_creator_profile_scrape_job_endpoint(
+    payload: ScrapeCreatorProfilesRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ScrapeJobStartResponse:
+    _require_scraping_enabled()
+    try:
+        return start_profile_scrape_job(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
 @app.get("/users/{user_id}/creators", response_model=list[CreatorResponse])
 def list_creators(
     user_id: str,
@@ -417,8 +584,10 @@ def delete_creator(
     creator_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
 ) -> DeleteResponse:
-    repo.delete_creator(user_id, creator_id)
-    return DeleteResponse(ok=True, message=f"Deleted creator {creator_id}.")
+    try:
+        return delete_creator_with_activities(repo, user_id, creator_id)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
 
 
 @app.post("/creators/scrape", response_model=ScrapeCreatorsResponse)
@@ -443,6 +612,26 @@ def scrape_recent_creators_endpoint(
     _require_scraping_enabled()
     try:
         return scrape_creators_recent_24h(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/scrape-jobs/creators/recent-24h", response_model=ScrapeJobStartResponse)
+def start_recent_creators_scrape_job_endpoint(
+    payload: RecentScrapeCreatorsRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ScrapeJobStartResponse:
+    _require_scraping_enabled()
+    try:
+        return start_recent_scrape_job(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/scrape-jobs/{job_id}", response_model=ScrapeJobStatusResponse)
+def get_scrape_job_endpoint(job_id: str) -> ScrapeJobStatusResponse:
+    try:
+        return get_scrape_job(job_id)
     except KeyError as exc:
         raise _not_found(exc) from exc
 
