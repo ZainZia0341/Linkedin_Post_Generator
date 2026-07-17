@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   Building2,
+  ChevronDown,
   Copy,
   ExternalLink,
   Loader2,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/api";
 import { compactDate, displayName, initials, sortThreads } from "@/lib/format";
 import { formatExperienceForClipboard, parseExperience } from "@/lib/profileExperience";
+import type { ExperienceItem } from "@/lib/profileExperience";
 import type { ActivityResponse, CreatorProfileDetailsResponse, CreatorResponse, UserDataResponse } from "@/lib/types";
 
 export function CreatorDetailView({ creatorId }: { creatorId: string }) {
@@ -196,15 +198,7 @@ export function CreatorDetailView({ creatorId }: { creatorId: string }) {
             {experienceItems.length ? (
               <div className="profile-experience-list">
                 {experienceItems.map((item, index) => (
-                  <div className="experience-row" key={`${item.heading}-${index}`}>
-                    <span><Building2 size={15} /></span>
-                    <div>
-                      <strong>{item.heading}</strong>
-                      {item.details.map((line, lineIndex) => (
-                        <small key={`${line}-${lineIndex}`}>{line}</small>
-                      ))}
-                    </div>
-                  </div>
+                  <ExperienceAccordionItem item={item} key={`${item.heading}-${index}`} />
                 ))}
               </div>
             ) : (
@@ -289,6 +283,35 @@ export function CreatorDetailView({ creatorId }: { creatorId: string }) {
         </div>
       ) : null}
     </AppShell>
+  );
+}
+
+function ExperienceAccordionItem({ item }: { item: ExperienceItem }) {
+  const summary = (
+    <>
+      <span className="experience-icon" aria-hidden="true"><Building2 size={15} /></span>
+      <span className="experience-summary-copy">
+        <strong title={item.heading}>{item.heading}</strong>
+        {item.company ? <span className="experience-company-line">{item.company}</span> : null}
+        {item.period ? <small className="experience-period-line">{item.period}</small> : null}
+      </span>
+    </>
+  );
+
+  if (!item.details.length) {
+    return <div className="experience-row experience-row-static">{summary}</div>;
+  }
+
+  return (
+    <details className="experience-row">
+      <summary className="experience-summary">
+        {summary}
+        <ChevronDown className="experience-chevron" size={17} aria-hidden="true" />
+      </summary>
+      <div className="experience-details">
+        {item.details.map((line, index) => <p key={`${line}-${index}`}>{line}</p>)}
+      </div>
+    </details>
   );
 }
 

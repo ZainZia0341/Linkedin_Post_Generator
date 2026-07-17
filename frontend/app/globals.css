@@ -2001,18 +2001,45 @@ a {
 
 .profile-experience-list {
   display: grid;
-  gap: 18px;
-  margin-top: 16px;
+  gap: 6px;
+  margin-top: 12px;
 }
 
 .experience-row {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
+  min-width: 0;
+  border-radius: 6px;
 }
 
-.experience-row span {
+.experience-summary,
+.experience-row-static {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 20px;
+  gap: 10px;
+  align-items: center;
+  min-height: 54px;
+  padding: 6px 8px 6px 0;
+}
+
+.experience-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.experience-summary::-webkit-details-marker {
+  display: none;
+}
+
+.experience-summary:hover,
+.experience-summary:focus-visible {
+  background: #f8f9ff;
+  outline: none;
+}
+
+.experience-row-static {
+  grid-template-columns: 36px minmax(0, 1fr);
+}
+
+.experience-icon {
   display: grid;
   place-items: center;
   width: 36px;
@@ -2022,41 +2049,65 @@ a {
   color: var(--accent);
 }
 
-.experience-row p {
-  margin: 0;
-  color: #273247;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.experience-row strong,
-.experience-row em,
-.experience-row small {
+.experience-summary-copy {
   display: block;
+  min-width: 0;
 }
 
-.experience-row strong {
+.experience-summary-copy strong,
+.experience-company-line,
+.experience-period-line {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.experience-summary-copy strong {
   color: var(--text);
   font-size: 13px;
   line-height: 1.35;
-  white-space: normal;
-  overflow-wrap: anywhere;
 }
 
-.experience-row em {
-  margin-top: 3px;
+.experience-company-line {
+  margin-top: 1px;
   color: #334155;
   font-size: 12px;
-  font-style: normal;
   font-weight: 700;
+  line-height: 1.35;
 }
 
-.experience-row small {
-  margin-top: 3px;
+.experience-period-line {
+  margin-top: 1px;
   color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.experience-chevron {
+  color: var(--muted);
+  transition: transform 160ms ease;
+}
+
+.experience-row[open] .experience-chevron {
+  transform: rotate(180deg);
+}
+
+.experience-details {
+  display: grid;
+  gap: 7px;
+  margin: 2px 8px 10px 46px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--line-strong);
+  background: #fafbff;
+}
+
+.experience-details p {
+  margin: 0;
+  color: #425067;
   font-size: 12px;
-  line-height: 1.4;
-  white-space: normal;
+  line-height: 1.55;
   overflow-wrap: anywhere;
 }
 
