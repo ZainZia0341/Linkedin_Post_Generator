@@ -83,10 +83,10 @@ export function DashboardView() {
           {loadState === "offline" ? <p className="status-note">API unavailable: {error}</p> : null}
         </div>
         <div className="action-row">
-          <button className="secondary-button" type="button">
+          <Link className="secondary-button" href="/brainstorm">
             <Brain size={17} />
             Brainstorm Ideas
-          </button>
+          </Link>
           <Link className="primary-button" href="/generate">
             <Sparkles size={17} />
             Generate Post

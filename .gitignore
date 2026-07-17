@@ -36,3 +36,11 @@ __pycache__/
 
 .serverless/
 serverless/
+
+.next
+
+.pytest_cache/
+
+.run_logs/
+
+generated_assets/

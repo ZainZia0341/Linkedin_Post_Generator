@@ -60,6 +60,17 @@ class GeneratedComment(BaseModel):
     rationale: str = ""
 
 
+class GeneratedCarouselSlide(BaseModel):
+    eyebrow: str = ""
+    title: str
+    body: str = ""
+
+
+class GeneratedCarousel(BaseModel):
+    title: str
+    slides: list[GeneratedCarouselSlide] = Field(default_factory=list)
+
+
 class PostReview(BaseModel):
     passed: bool | str = False
     feedback: str = ""

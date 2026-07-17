@@ -15,8 +15,15 @@ function timeoutForPath(path: string): number | null {
     path.includes("posts/generate") ||
     path.includes("posts/from-creator-activity") ||
     path.includes("posts/modify") ||
+    path.includes("posts/builder/generate") ||
     path.includes("comments/generate") ||
-    path.includes("ideas/brainstorm")
+    path.includes("ideas/brainstorm") ||
+    path.includes("linkedin/posts/sync-recent") ||
+    path.includes("engagement/scrape") ||
+    path.includes("linkedin/actions/") ||
+    path.includes("carousels/generate") ||
+    path.includes("images/generate") ||
+    path.includes("content-sources/extract")
   ) {
     return null;
   }

@@ -51,6 +51,11 @@ class GeneratePostRequest(BaseModel):
         description="Tracking metadata for where the idea came from, such as manual, brainstorm, or creator_activity.",
         examples=["manual"],
     )
+    post_variation: str = Field(default="", description="Optional builder variation such as Actionable or Storytelling.")
+    format_tags: list[str] = Field(default_factory=list, description="Optional post format instructions.")
+    tone_tags: list[str] = Field(default_factory=list, description="Optional additional tone instructions.")
+    angle_tags: list[str] = Field(default_factory=list, description="Optional narrative angle instructions.")
+    structure: str = Field(default="", description="Optional copy structure such as AIDA, PAS, BAB, or PPP.")
 
 
 class GenerateFromActivityRequest(BaseModel):
@@ -91,6 +96,71 @@ class ThreadSummary(BaseModel):
     generation_style: str = ""
     created_at: str
     updated_at: str
+
+
+class PostBuilderGenerateRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    topic: str = Field(min_length=2, max_length=6000)
+    source_url: str = ""
+    post_length: str = "Medium"
+    writing_style: str = "Clear Builder"
+    variations: list[str] = Field(default_factory=lambda: ["Actionable"], min_length=1, max_length=3)
+    formats: list[str] = Field(default_factory=list, max_length=5)
+    tones: list[str] = Field(default_factory=lambda: ["Professional"], max_length=5)
+    angles: list[str] = Field(default_factory=list, max_length=5)
+    structure: str = ""
+    post_count: int = Field(default=1, ge=1, le=3)
+
+
+class PostBuilderGenerateResponse(BaseModel):
+    user_id: str
+    source_url: str = ""
+    source_title: str = ""
+    threads: list[ThreadResponse] = Field(default_factory=list)
+
+
+class ContentItemCreateRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    title: str = Field(min_length=1, max_length=240)
+    body: str = ""
+    status: str = "idea"
+
+
+class ContentItemUpdateRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    title: str | None = Field(default=None, max_length=240)
+    body: str | None = None
+    status: str | None = None
+    scheduled_at: str | None = None
+
+
+class ContentItemResponse(BaseModel):
+    user_id: str
+    content_id: str
+    thread_id: str
+    title: str
+    body: str = ""
+    status: str = "idea"
+    topic_source: str = "manual"
+    source: dict[str, Any] = Field(default_factory=dict)
+    assets: list[str] = Field(default_factory=list)
+    scheduled_at: str = ""
+    created_at: str
+    updated_at: str
+
+
+class ContentSourceExtractRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class ContentSourceResponse(BaseModel):
+    url: str
+    canonical_url: str
+    title: str = ""
+    description: str = ""
+    text: str = ""
+    word_count: int = 0
+    content_type: str = ""
 
 
 class BrainstormRequest(BaseModel):
@@ -264,6 +334,28 @@ class PostEngagerResponse(BaseModel):
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class LinkedInProspectResponse(BaseModel):
+    prospect_id: str
+    user_id: str
+    profile_key: str
+    profile_url: str = ""
+    profile_urn: str = ""
+    name: str = ""
+    headline: str = ""
+    connection_degree: str = ""
+    engagement_types: list[str] = Field(default_factory=list)
+    engagement_count: int = 0
+    source_post_ids: list[str] = Field(default_factory=list)
+    source_post_count: int = 0
+    latest_comment_text: str = ""
+    last_engaged_at: str = ""
+    latest_action_type: str = ""
+    latest_action_status: str = ""
+    can_reply: bool = False
+    can_dm: bool = False
+    can_connect: bool = False
+
+
 class PostEngagementScrapeResponse(BaseModel):
     user_id: str
     post_id: str
@@ -348,6 +440,72 @@ class LinkedInActionLogResponse(BaseModel):
     created_at: str = ""
     started_at: str = ""
     finished_at: str = ""
+
+
+class CarouselSlide(BaseModel):
+    slide_id: str
+    eyebrow: str = ""
+    title: str
+    body: str = ""
+
+
+class CarouselCreateRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    title: str = Field(min_length=1, max_length=240)
+    theme: str = "Signal"
+    slide_count: int = Field(default=5, ge=1, le=12)
+
+
+class CarouselGenerateRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    topic: str = Field(min_length=2, max_length=4000)
+    audience: str = "LinkedIn professionals"
+    tone: str = "Professional"
+    theme: str = "Signal"
+    slide_count: int = Field(default=7, ge=4, le=10)
+
+
+class CarouselUpdateRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    title: str | None = Field(default=None, max_length=240)
+    theme: str | None = None
+    slides: list[CarouselSlide] | None = Field(default=None, min_length=1, max_length=12)
+
+
+class CarouselResponse(BaseModel):
+    user_id: str
+    carousel_id: str
+    title: str
+    topic: str
+    audience: str = ""
+    tone: str = ""
+    theme: str = "Signal"
+    slides: list[CarouselSlide] = Field(default_factory=list)
+    status: str = "draft"
+    created_at: str
+    updated_at: str
+
+
+class ImageGenerationRequest(BaseModel):
+    user_id: str = Field(examples=["test-user-1"])
+    prompt: str = Field(min_length=3, max_length=6000)
+    post_text: str = Field(default="", max_length=10000)
+    aspect_ratio: str = "1:1"
+    style: str = "Editorial"
+    model: str = ""
+
+
+class ImageAssetResponse(BaseModel):
+    user_id: str
+    asset_id: str
+    prompt: str
+    revised_prompt: str = ""
+    model: str
+    mime_type: str
+    aspect_ratio: str
+    style: str
+    asset_url: str
+    created_at: str
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
 
 

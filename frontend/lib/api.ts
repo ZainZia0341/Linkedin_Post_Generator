@@ -2,11 +2,24 @@ import type {
   ActivityResponse,
   BulkCreatorImportResponse,
   BulkCreatorPreviewResponse,
+  BrainstormResponse,
+  CarouselResponse,
   CommentedActivityResponse,
   CommentResponse,
+  ContentItemResponse,
+  ContentItemStatus,
+  ContentSourceResponse,
   CreatorProfileDetailsResponse,
   CreatorResponse,
   DeleteResponse,
+  ImageAssetResponse,
+  LinkedInActionBatchResponse,
+  LinkedInActionLogResponse,
+  LinkedInProspectResponse,
+  OwnPostResponse,
+  PostBuilderGenerateResponse,
+  PostEngagementScrapeResponse,
+  PostEngagerResponse,
   RecentActivitiesResponse,
   RecentScrapeCreatorsResponse,
   ScrapeCreatorProfilesResponse,
@@ -389,4 +402,305 @@ export function refinePost(payload: {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function brainstormIdeas(payload: { user_id: string; topic?: string; action?: string }) {
+  return apiFetch<BrainstormResponse>("/ideas/brainstorm", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generatePostBuilder(payload: {
+  user_id: string;
+  topic: string;
+  source_url?: string;
+  post_length?: string;
+  writing_style?: string;
+  variations?: string[];
+  formats?: string[];
+  tones?: string[];
+  angles?: string[];
+  structure?: string;
+  post_count?: number;
+}) {
+  return apiFetch<PostBuilderGenerateResponse>("/posts/builder/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearUserWorkflowCache(payload.user_id);
+    clearApiCache(`/users/${payload.user_id}/content-items`);
+    return result;
+  });
+}
+
+export function extractContentSource(url: string) {
+  return apiFetch<ContentSourceResponse>("/content-sources/extract", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
+export function fetchContentItems(userId = DEFAULT_USER_ID, limit = 200) {
+  return cachedApiFetch<ContentItemResponse[]>(`/users/${userId}/content-items?limit=${limit}`);
+}
+
+export function createContentItem(payload: {
+  user_id: string;
+  title: string;
+  body?: string;
+  status?: ContentItemStatus;
+}) {
+  return apiFetch<ContentItemResponse>("/content-items", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearUserWorkflowCache(payload.user_id);
+    clearApiCache(`/users/${payload.user_id}/content-items`);
+    return result;
+  });
+}
+
+export function updateContentItem(
+  contentId: string,
+  payload: {
+    user_id: string;
+    title?: string;
+    body?: string;
+    status?: ContentItemStatus;
+    scheduled_at?: string;
+  },
+) {
+  return apiFetch<ContentItemResponse>(`/content-items/${encodeURIComponent(contentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearUserWorkflowCache(payload.user_id);
+    clearApiCache(`/users/${payload.user_id}/content-items`);
+    return result;
+  });
+}
+
+export function fetchOwnLinkedInPosts(userId = DEFAULT_USER_ID, limit = 100) {
+  return cachedApiFetch<OwnPostResponse[]>(
+    `/users/${userId}/linkedin/posts?limit=${limit}&window_hours=72`,
+  );
+}
+
+export function trackOwnLinkedInPost(payload: {
+  user_id: string;
+  post_url: string;
+  post_text?: string;
+  post_id?: string;
+  source?: string;
+}) {
+  return apiFetch<OwnPostResponse>("/linkedin/posts/publish", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/linkedin`);
+    return result;
+  });
+}
+
+export function syncOwnLinkedInPosts(payload: {
+  user_id: string;
+  profile_url?: string;
+  window_hours?: number;
+  max_posts?: number;
+  launch_delay_seconds?: number;
+}) {
+  return apiFetch<{
+    user_id: string;
+    checked_count: number;
+    saved_count: number;
+    skipped_count: number;
+    posts: OwnPostResponse[];
+    skipped_posts: Array<Record<string, string>>;
+    errors: Array<Record<string, string>>;
+  }>("/linkedin/posts/sync-recent", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/linkedin`);
+    return result;
+  });
+}
+
+export function scrapeOwnPostEngagement(postId: string, userId = DEFAULT_USER_ID) {
+  return apiFetch<PostEngagementScrapeResponse>(
+    `/linkedin/posts/${encodeURIComponent(postId)}/engagement/scrape`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: userId,
+        include_likes: true,
+        include_comments: true,
+        launch_delay_seconds: 3,
+      }),
+    },
+  ).then((result) => {
+    clearApiCache(`/linkedin/posts/${encodeURIComponent(postId)}/engagers`);
+    clearApiCache(`/users/${userId}/linkedin/prospects`);
+    return result;
+  });
+}
+
+export function fetchPostEngagers(postId: string, userId = DEFAULT_USER_ID) {
+  return cachedApiFetch<PostEngagerResponse[]>(
+    `/linkedin/posts/${encodeURIComponent(postId)}/engagers?user_id=${encodeURIComponent(userId)}&limit=500`,
+  );
+}
+
+export function fetchLinkedInProspects(
+  userId = DEFAULT_USER_ID,
+  filters?: { engagementType?: string; connectionDegree?: string; search?: string },
+) {
+  const params = new URLSearchParams({ limit: "500" });
+  if (filters?.engagementType) params.set("engagement_type", filters.engagementType);
+  if (filters?.connectionDegree) params.set("connection_degree", filters.connectionDegree);
+  if (filters?.search) params.set("search", filters.search);
+  return cachedApiFetch<LinkedInProspectResponse[]>(
+    `/users/${userId}/linkedin/prospects?${params.toString()}`,
+  );
+}
+
+export function fetchLinkedInActionLogs(userId = DEFAULT_USER_ID, limit = 200) {
+  return cachedApiFetch<LinkedInActionLogResponse[]>(
+    `/users/${userId}/linkedin/action-logs?limit=${limit}`,
+  );
+}
+
+export function sendCommentReplies(payload: {
+  user_id: string;
+  post_id: string;
+  profile_urls: string[];
+  reply_text: string;
+  dry_run: boolean;
+}) {
+  return apiFetch<LinkedInActionBatchResponse>("/linkedin/actions/comment-replies", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, launch_delay_seconds: 3 }),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/linkedin/action-logs`);
+    return result;
+  });
+}
+
+export function sendConnectionRequests(payload: {
+  user_id: string;
+  post_id: string;
+  profile_urls: string[];
+  engagement_types: string[];
+  note: string;
+  dry_run: boolean;
+}) {
+  return apiFetch<LinkedInActionBatchResponse>("/linkedin/actions/connection-requests", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, launch_delay_seconds: 3 }),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/linkedin/action-logs`);
+    return result;
+  });
+}
+
+export function sendDirectMessages(payload: {
+  user_id: string;
+  post_id: string;
+  profile_urls: string[];
+  message: string;
+  dry_run: boolean;
+}) {
+  return apiFetch<LinkedInActionBatchResponse>("/linkedin/actions/dms", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, launch_delay_seconds: 3 }),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/linkedin/action-logs`);
+    return result;
+  });
+}
+
+export function generateCarousel(payload: {
+  user_id: string;
+  topic: string;
+  audience: string;
+  tone: string;
+  theme: string;
+  slide_count: number;
+}) {
+  return apiFetch<CarouselResponse>("/carousels/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/carousels`);
+    return result;
+  });
+}
+
+export function createCarousel(payload: {
+  user_id: string;
+  title: string;
+  theme: string;
+  slide_count: number;
+}) {
+  return apiFetch<CarouselResponse>("/carousels", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/carousels`);
+    return result;
+  });
+}
+
+export function fetchCarousels(userId = DEFAULT_USER_ID, limit = 100) {
+  return cachedApiFetch<CarouselResponse[]>(`/users/${userId}/carousels?limit=${limit}`);
+}
+
+export function saveCarousel(carousel: CarouselResponse) {
+  return apiFetch<CarouselResponse>(`/carousels/${encodeURIComponent(carousel.carousel_id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      user_id: carousel.user_id,
+      title: carousel.title,
+      theme: carousel.theme,
+      slides: carousel.slides,
+    }),
+  }).then((result) => {
+    clearApiCache(`/users/${carousel.user_id}/carousels`);
+    return result;
+  });
+}
+
+export function generateImageAsset(payload: {
+  user_id: string;
+  prompt: string;
+  post_text?: string;
+  aspect_ratio?: string;
+  style?: string;
+}) {
+  return apiFetch<ImageAssetResponse>("/images/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }).then((result) => {
+    clearApiCache(`/users/${payload.user_id}/image-assets`);
+    return result;
+  });
+}
+
+export function fetchImageAssets(userId = DEFAULT_USER_ID, limit = 100) {
+  return cachedApiFetch<ImageAssetResponse[]>(`/users/${userId}/image-assets?limit=${limit}`);
+}
+
+export function deleteImageAsset(userId: string, assetId: string) {
+  return apiFetch<DeleteResponse>(
+    `/users/${userId}/image-assets/${encodeURIComponent(assetId)}`,
+    { method: "DELETE" },
+  ).then((result) => {
+    clearApiCache(`/users/${userId}/image-assets`);
+    return result;
+  });
+}
+
+export function backendAssetUrl(assetUrl: string) {
+  return `/api/backend${assetUrl.startsWith("/") ? assetUrl : `/${assetUrl}`}`;
 }

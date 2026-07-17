@@ -52,6 +52,13 @@ USER_PROFILE_PATH: Final[Path] = LOCAL_DB_DIR / "user_profile.json"
 TRACKED_PROFILE_DIR: Final[Path] = LOCAL_DB_DIR / "tracked_profiles"
 TRACKED_PROFILE_INDEX_PATH: Final[Path] = TRACKED_PROFILE_DIR / "index.json"
 PLAYWRIGHT_LOCAL_DIR: Final[Path] = LOCAL_DB_DIR / "playwright"
+GENERATED_ASSET_DIR: Final[Path] = Path(
+    _env_value("GENERATED_ASSET_DIR", str(PROJECT_ROOT / "generated_assets"))
+)
+GEMINI_IMAGE_MODEL: Final[str] = _env_value(
+    "GEMINI_IMAGE_MODEL",
+    "gemini-3.1-flash-lite-image",
+)
 
 DEFAULT_MAX_MESSAGES: Final[int] = int(os.getenv("MAX_CHAT_MESSAGES", "10"))
 MAX_REVIEW_ATTEMPTS: Final[int] = int(os.getenv("MAX_REVIEW_ATTEMPTS", "3"))

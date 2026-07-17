@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import io
+import base64
 import time
 import zipfile
 from types import SimpleNamespace
 
 from app.api.schemas import (
+    CarouselCreateRequest,
+    CarouselGenerateRequest,
+    ContentItemCreateRequest,
+    ContentItemUpdateRequest,
     CommentReplyActionRequest,
     ConnectionRequestActionRequest,
     CreatorCreateRequest,
     DmActionRequest,
     GenerateCommentRequest,
     GeneratePostRequest,
+    ImageGenerationRequest,
     LinkedInPostPublishRequest,
     MarkCommentedRequest,
     ModifyCommentRequest,
@@ -44,7 +50,19 @@ from app.api.services import (
     track_published_linkedin_post,
 )
 import app.api.services as services
-from app.llms.llm_structure_schema import GeneratedPost
+import app.content_workflows as content_workflows
+from app.content_workflows import (
+    create_carousel,
+    create_content_item,
+    delete_image_asset,
+    generate_carousel,
+    generate_image_asset,
+    list_carousels,
+    list_content_items,
+    list_image_assets,
+    update_content_item,
+)
+from app.llms.llm_structure_schema import GeneratedCarousel, GeneratedCarouselSlide, GeneratedPost
 from app.nodes import post_nodes
 from app.writing_style_extract import get_builtin_writing_style
 
@@ -69,6 +87,13 @@ class MemoryRepo:
 
     def get_thread(self, user_id: str, thread_id: str):
         return self.threads.get((user_id, thread_id))
+
+    def list_threads(self, user_id: str, limit: int | None = None):
+        threads = [thread for (stored_user_id, _), thread in self.threads.items() if stored_user_id == user_id]
+        return threads[: limit or 10]
+
+    def list_users(self, limit: int | None = None):
+        return list(self.users.values())[: limit or 10]
 
     def get_creator(self, user_id: str, creator_id: str):
         return self.creators.get((user_id, creator_id))
@@ -167,6 +192,148 @@ def test_api_service_add_creator_normalizes_url() -> None:
     creator = create_creator(repo, "test-user-1", "linkedin.com/in/theburningmonk/?trk=abc")
     assert creator.creator_id == "theburningmonk"
     assert creator.profile_url == "https://www.linkedin.com/in/theburningmonk/"
+
+
+def test_content_pipeline_reuses_thread_records() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+
+    created = create_content_item(
+        repo,
+        ContentItemCreateRequest(
+            user_id="test-user-1",
+            title="A practical automation lesson",
+            body="Start with the workflow, not the tool.",
+            status="idea",
+        ),
+    )
+
+    assert created.content_id == created.thread_id
+    assert len(repo.threads) == 1
+    assert repo.activities == {}
+
+    updated = update_content_item(
+        repo,
+        created.content_id,
+        ContentItemUpdateRequest(
+            user_id="test-user-1",
+            status="ready",
+            body="Start with the decision, then improve the workflow.",
+        ),
+    )
+    assert updated.status == "ready"
+    assert "improve" in updated.body
+    assert list_content_items(repo, "test-user-1", 10)[0].content_id == created.content_id
+
+
+def test_carousel_lifecycle_uses_reserved_activity_partition(monkeypatch) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+
+    monkeypatch.setattr(
+        content_workflows,
+        "invoke_structured",
+        lambda **_: GeneratedCarousel(
+            title="Three automation lessons",
+            slides=[
+                GeneratedCarouselSlide(eyebrow="01", title="Cover", body="Three practical lessons"),
+                GeneratedCarouselSlide(eyebrow="02", title="Start small", body="Choose one workflow"),
+                GeneratedCarouselSlide(eyebrow="03", title="Measure", body="Track the result"),
+                GeneratedCarouselSlide(eyebrow="04", title="Takeaway", body="Improve one constraint at a time"),
+            ],
+        ),
+    )
+
+    carousel = generate_carousel(
+        repo,
+        CarouselGenerateRequest(
+            user_id="test-user-1",
+            topic="Automation lessons",
+            audience="Operators",
+            tone="Practical",
+            theme="Editorial",
+            slide_count=4,
+        ),
+    )
+
+    assert len(carousel.slides) == 4
+    assert repo.get_activity(
+        "test-user-1",
+        content_workflows.CAROUSEL_CREATOR_ID,
+        carousel.carousel_id,
+    )
+    assert list_carousels(repo, "test-user-1", 10)[0].title == "Three automation lessons"
+
+
+def test_manual_carousel_uses_same_storage_and_shape() -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+
+    carousel = create_carousel(
+        repo,
+        CarouselCreateRequest(
+            user_id="test-user-1",
+            title="Manual carousel",
+            theme="Signal",
+            slide_count=3,
+        ),
+    )
+
+    assert carousel.topic == "Manual carousel"
+    assert carousel.theme == "Signal"
+    assert len(carousel.slides) == 3
+    assert repo.get_activity(
+        "test-user-1",
+        content_workflows.CAROUSEL_CREATOR_ID,
+        carousel.carousel_id,
+    )["source"] == "manual_carousel"
+
+
+def test_image_asset_generation_and_delete(monkeypatch, tmp_path) -> None:
+    repo = MemoryRepo()
+    create_user(repo, "test-user-1", {"headline": "AI engineer"}, None)
+    monkeypatch.setattr(content_workflows, "GENERATED_ASSET_DIR", tmp_path / "generated")
+    monkeypatch.setattr(content_workflows, "get_env_api_key", lambda provider: "test-key")
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": base64.b64encode(b"test-image-bytes").decode("ascii"),
+                            }
+                        }]
+                    }
+                }]
+            }
+
+    monkeypatch.setattr(content_workflows.httpx, "post", lambda *args, **kwargs: FakeResponse())
+
+    asset = generate_image_asset(
+        repo,
+        ImageGenerationRequest(
+            user_id="test-user-1",
+            prompt="An editorial workflow diagram on a real whiteboard",
+            aspect_ratio="4:5",
+            style="Editorial",
+        ),
+    )
+
+    stored = repo.get_activity("test-user-1", content_workflows.IMAGE_ASSET_CREATOR_ID, asset.asset_id)
+    assert stored is not None
+    assert list_image_assets(repo, "test-user-1", 10)[0].aspect_ratio == "4:5"
+    assert content_workflows.Path(stored["local_path"]).exists()
+
+    delete_image_asset(repo, "test-user-1", asset.asset_id)
+    assert not content_workflows.Path(stored["local_path"]).exists()
+    assert list_image_assets(repo, "test-user-1", 10) == []
 
 
 def test_api_service_add_creator_duplicate_returns_existing_without_rewrite() -> None:

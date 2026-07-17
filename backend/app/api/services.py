@@ -37,6 +37,7 @@ from app.api.schemas import (
     LinkedInActionResult,
     LinkedInPostPublishRequest,
     LinkedInPostPublishResponse,
+    LinkedInProspectResponse,
     MarkCommentedRequest,
     ModifyCommentRequest,
     ModifyPostRequest,
@@ -339,11 +340,28 @@ def _normalize_control(value: str | None, allowed: list[str], default: str) -> s
     return cleaned[:80]
 
 
-def _post_generation_instructions(post_length: str, tone: str, writing_style: str) -> str:
+def _post_generation_instructions(
+    post_length: str,
+    tone: str,
+    writing_style: str,
+    post_variation: str = "",
+    format_tags: list[str] | None = None,
+    tone_tags: list[str] | None = None,
+    angle_tags: list[str] | None = None,
+    structure: str = "",
+) -> str:
+    advanced = [
+        f"Variation: {post_variation}." if post_variation else "",
+        f"Format preferences: {', '.join(format_tags or [])}." if format_tags else "",
+        f"Additional tone signals: {', '.join(tone_tags or [])}." if tone_tags else "",
+        f"Narrative angles: {', '.join(angle_tags or [])}." if angle_tags else "",
+        f"Copy structure: {structure}." if structure else "",
+    ]
     return (
         f"Post length: {post_length}.\n"
         f"Tone: {tone}.\n"
         f"Writing style: {writing_style}.\n"
+        f"{' '.join(item for item in advanced if item)}\n"
         "Do not use a CTA template. Do not follow a prebuilt post template. "
         "Create the post directly from the topic and controls. "
         "Avoid generic hashtags such as #LinkedIn, #CareerGrowth, and #BuildingInPublic. "
@@ -457,7 +475,16 @@ def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> Threa
     style = _style_with_topic_hashtags(_resolve_style(user, writing_style_name), request.idea)
     generation_style_label = "Custom controls"
     profile = user.get("profile") or {}
-    generation_instructions = _post_generation_instructions(post_length, tone, writing_style_name)
+    generation_instructions = _post_generation_instructions(
+        post_length,
+        tone,
+        writing_style_name,
+        request.post_variation,
+        request.format_tags,
+        request.tone_tags,
+        request.angle_tags,
+        request.structure,
+    )
 
     graph_result = run_post_generation(
         {
@@ -492,7 +519,13 @@ def generate_post(repo: DynamoRepository, request: GeneratePostRequest) -> Threa
             "post_length": post_length,
             "tone": tone,
             "writing_style": writing_style_name,
+            "post_variation": request.post_variation,
+            "format_tags": request.format_tags,
+            "tone_tags": request.tone_tags,
+            "angle_tags": request.angle_tags,
+            "structure": request.structure,
         },
+        "content_status": "in_progress",
         "writing_style_snapshot": style,
         "profile_snapshot": profile,
         "created_at": timestamp,
@@ -2589,6 +2622,105 @@ def list_linkedin_action_logs(
         logs = [log for log in logs if log.action_type == action_type]
     logs.sort(key=lambda item: item.created_at, reverse=True)
     return logs[: limit or API_LIST_LIMIT]
+
+
+def list_linkedin_prospects(
+    repo: DynamoRepository,
+    user_id: str,
+    engagement_type: str | None = None,
+    connection_degree: str | None = None,
+    search: str | None = None,
+    limit: int | None = None,
+) -> list[LinkedInProspectResponse]:
+    require_user(repo, user_id)
+    merged: dict[str, dict[str, Any]] = {}
+    for activity in _own_post_activities(repo, user_id, LINKEDIN_POST_EXISTING_LIMIT):
+        post = _own_post_record_from_activity(activity)
+        post_id = str(post.get("post_id", ""))
+        for engager in _post_engager_records(repo, user_id, post_id):
+            profile_key = str(engager.get("profile_key", ""))
+            if not profile_key:
+                continue
+            current = merged.setdefault(
+                profile_key,
+                {
+                    "prospect_id": hashlib.sha256(profile_key.encode("utf-8")).hexdigest()[:24],
+                    "user_id": user_id,
+                    "profile_key": profile_key,
+                    "profile_url": "",
+                    "profile_urn": "",
+                    "name": "",
+                    "headline": "",
+                    "connection_degree": "",
+                    "engagement_types": set(),
+                    "engagement_count": 0,
+                    "source_post_ids": set(),
+                    "latest_comment_text": "",
+                    "last_engaged_at": "",
+                },
+            )
+            for field in ("profile_url", "profile_urn", "name", "headline", "connection_degree"):
+                if engager.get(field):
+                    current[field] = str(engager[field])
+            types = {str(item).lower() for item in engager.get("engagement_types", []) if str(item).strip()}
+            current["engagement_types"].update(types)
+            current["engagement_count"] += max(1, len(types))
+            current["source_post_ids"].add(post_id)
+            scraped_at = str(engager.get("scraped_at", ""))
+            if scraped_at >= current["last_engaged_at"]:
+                current["last_engaged_at"] = scraped_at
+                if engager.get("comment_text"):
+                    current["latest_comment_text"] = str(engager["comment_text"])
+
+    latest_actions: dict[str, LinkedInActionLogResponse] = {}
+    for action in sorted(_action_log_records(repo, user_id), key=lambda item: str(item.get("created_at", "")), reverse=True):
+        profile_key = str(action.get("profile_key", ""))
+        if profile_key and profile_key not in latest_actions:
+            latest_actions[profile_key] = _action_log_response(action)
+
+    normalized_type = str(engagement_type or "").strip().lower()
+    normalized_degree = str(connection_degree or "").strip().lower()
+    normalized_search = str(search or "").strip().lower()
+    prospects: list[LinkedInProspectResponse] = []
+    for profile_key, item in merged.items():
+        engagement_types = sorted(item["engagement_types"])
+        if normalized_type and normalized_type not in engagement_types:
+            continue
+        if normalized_degree and str(item["connection_degree"]).lower() != normalized_degree:
+            continue
+        haystack = " ".join(
+            [str(item["name"]), str(item["headline"]), str(item["profile_url"])]
+        ).lower()
+        if normalized_search and normalized_search not in haystack:
+            continue
+        latest_action = latest_actions.get(profile_key)
+        is_first_degree = str(item["connection_degree"]).strip().lower().startswith("1")
+        source_post_ids = sorted(item["source_post_ids"])
+        prospects.append(
+            LinkedInProspectResponse(
+                prospect_id=str(item["prospect_id"]),
+                user_id=user_id,
+                profile_key=profile_key,
+                profile_url=str(item["profile_url"]),
+                profile_urn=str(item["profile_urn"]),
+                name=str(item["name"]),
+                headline=str(item["headline"]),
+                connection_degree=str(item["connection_degree"]),
+                engagement_types=engagement_types,
+                engagement_count=int(item["engagement_count"]),
+                source_post_ids=source_post_ids,
+                source_post_count=len(source_post_ids),
+                latest_comment_text=str(item["latest_comment_text"]),
+                last_engaged_at=str(item["last_engaged_at"]),
+                latest_action_type=latest_action.action_type if latest_action else "",
+                latest_action_status=latest_action.status if latest_action else "",
+                can_reply="comment" in engagement_types and bool(item["latest_comment_text"]),
+                can_dm=is_first_degree,
+                can_connect=bool(item["profile_url"]) and not is_first_degree,
+            )
+        )
+    prospects.sort(key=lambda item: item.last_engaged_at, reverse=True)
+    return prospects[: limit or API_LIST_LIMIT]
 
 
 def _target_engagers(

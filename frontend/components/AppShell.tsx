@@ -5,7 +5,12 @@ import {
   Bell,
   Brain,
   Clock,
+  Columns3,
+  ContactRound,
+  GalleryHorizontalEnd,
+  Image,
   LayoutDashboard,
+  Network,
   PenLine,
   Rss,
   Sparkles,
@@ -16,7 +21,7 @@ import type { ThreadSummary } from "@/lib/types";
 import { compactDate, initials, threadTitle } from "@/lib/format";
 
 type AppShellProps = {
-  active: "dashboard" | "generate" | "brainstorm" | "creators" | "posts" | "activity" | "engagement" | "history" | "settings";
+  active: "dashboard" | "generate" | "builder" | "content" | "carousels" | "images" | "prospects" | "networking" | "brainstorm" | "creators" | "posts" | "activity" | "engagement" | "history" | "settings";
   title: string;
   subtitle?: string;
   eyebrowLabel?: string | null;
@@ -29,7 +34,13 @@ type AppShellProps = {
 const navItems = [
   { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { key: "generate", label: "Generate", href: "/generate", icon: Sparkles },
-  { key: "brainstorm", label: "Brainstorm", href: "", icon: Brain },
+  { key: "builder", label: "Post Builder", href: "/content/post-builder", icon: PenLine },
+  { key: "content", label: "Content Pipeline", href: "/content", icon: Columns3 },
+  { key: "carousels", label: "Carousels", href: "/content/carousels", icon: GalleryHorizontalEnd },
+  { key: "images", label: "Image Studio", href: "/content/images", icon: Image },
+  { key: "brainstorm", label: "Brainstorm", href: "/brainstorm", icon: Brain },
+  { key: "prospects", label: "Prospect Hub", href: "/prospects", icon: ContactRound },
+  { key: "networking", label: "Networking", href: "/networking", icon: Network },
   { key: "creators", label: "Creators", href: "/creators", icon: Users },
   { key: "posts", label: "Ready to Comment", href: "/posts-scraping", icon: Rss },
 ] as const;
@@ -66,20 +77,11 @@ export function AppShell({
           {navItems.map((item) => {
             const Icon = item.icon;
             const className = item.key === active ? "nav-item active" : "nav-item";
-            if (item.href) {
-              return (
-                <Link className={className} href={item.href} key={item.key}>
-                  <Icon size={17} />
-                  <span>{item.label}</span>
-                </Link>
-              );
-            }
-
             return (
-              <button className={`${className} muted`} type="button" disabled key={item.key}>
+              <Link className={className} href={item.href} key={item.key}>
                 <Icon size={17} />
                 <span>{item.label}</span>
-              </button>
+              </Link>
             );
           })}
         </nav>

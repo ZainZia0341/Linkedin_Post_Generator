@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 
 from app.api.schemas import (
     ActivityResponse,
@@ -15,7 +17,16 @@ from app.api.schemas import (
     CommentReplyActionRequest,
     CommentResponse,
     CommentedActivityResponse,
+    CarouselCreateRequest,
+    CarouselGenerateRequest,
+    CarouselResponse,
+    CarouselUpdateRequest,
     ConnectionRequestActionRequest,
+    ContentItemCreateRequest,
+    ContentItemResponse,
+    ContentItemUpdateRequest,
+    ContentSourceExtractRequest,
+    ContentSourceResponse,
     CreatorCreateRequest,
     CreatorProfileDetailsResponse,
     CreatorResponse,
@@ -26,14 +37,19 @@ from app.api.schemas import (
     GeneratePostRequest,
     LinkedInActionBatchResponse,
     LinkedInActionLogResponse,
+    LinkedInProspectResponse,
     LinkedInPostPublishRequest,
     LinkedInPostPublishResponse,
     MarkCommentedRequest,
     ModifyCommentRequest,
     ModifyPostRequest,
+    ImageAssetResponse,
+    ImageGenerationRequest,
     OwnPostResponse,
     PostEngagementScrapeResponse,
     PostEngagerResponse,
+    PostBuilderGenerateRequest,
+    PostBuilderGenerateResponse,
     RecentActivitiesResponse,
     RecentScrapeCreatorsRequest,
     RecentScrapeCreatorsResponse,
@@ -70,6 +86,7 @@ from app.api.services import (
     list_commented_activities,
     list_all_activities,
     list_linkedin_action_logs,
+    list_linkedin_prospects,
     list_linkedin_post_engagers,
     list_linkedin_posts,
     list_creator_profile_details,
@@ -94,6 +111,21 @@ from app.api.services import (
     track_published_linkedin_post,
     update_user,
     user_response,
+)
+from app.content_workflows import (
+    create_carousel,
+    create_content_item,
+    delete_image_asset,
+    extract_content_source,
+    generate_carousel,
+    generate_image_asset,
+    generate_post_builder_variations,
+    get_image_asset_path,
+    list_carousels,
+    list_content_items,
+    list_image_assets,
+    update_carousel,
+    update_content_item,
 )
 from app.config import API_LIST_LIMIT, PROVIDER_MODELS, SCRAPING_ENABLED
 from app.db.dynamodb import DynamoRepository, DynamoUnavailable, get_repository
@@ -251,6 +283,21 @@ def generate_post_endpoint(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.post("/posts/builder/generate", response_model=PostBuilderGenerateResponse)
+def generate_post_builder_endpoint(
+    payload: PostBuilderGenerateRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> PostBuilderGenerateResponse:
+    try:
+        return generate_post_builder_variations(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/posts/modify", response_model=ThreadResponse)
 def modify_post_endpoint(
     payload: ModifyPostRequest,
@@ -317,6 +364,155 @@ def brainstorm_endpoint(
 ) -> BrainstormResponse:
     try:
         return brainstorm(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/content-sources/extract", response_model=ContentSourceResponse)
+def extract_content_source_endpoint(payload: ContentSourceExtractRequest) -> ContentSourceResponse:
+    try:
+        return extract_content_source(payload.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not load article: {exc}") from exc
+
+
+@app.post("/content-items", response_model=ContentItemResponse)
+def create_content_item_endpoint(
+    payload: ContentItemCreateRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ContentItemResponse:
+    try:
+        return create_content_item(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/users/{user_id}/content-items", response_model=list[ContentItemResponse])
+def list_content_items_endpoint(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[ContentItemResponse]:
+    try:
+        return list_content_items(repo, user_id, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.patch("/content-items/{content_id}", response_model=ContentItemResponse)
+def update_content_item_endpoint(
+    content_id: str,
+    payload: ContentItemUpdateRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ContentItemResponse:
+    try:
+        return update_content_item(repo, content_id, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/carousels", response_model=CarouselResponse)
+def create_carousel_endpoint(
+    payload: CarouselCreateRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CarouselResponse:
+    try:
+        return create_carousel(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/carousels/generate", response_model=CarouselResponse)
+def generate_carousel_endpoint(
+    payload: CarouselGenerateRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CarouselResponse:
+    try:
+        return generate_carousel(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/users/{user_id}/carousels", response_model=list[CarouselResponse])
+def list_carousels_endpoint(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[CarouselResponse]:
+    try:
+        return list_carousels(repo, user_id, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.patch("/carousels/{carousel_id}", response_model=CarouselResponse)
+def update_carousel_endpoint(
+    carousel_id: str,
+    payload: CarouselUpdateRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> CarouselResponse:
+    try:
+        return update_carousel(repo, carousel_id, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.post("/images/generate", response_model=ImageAssetResponse)
+def generate_image_endpoint(
+    payload: ImageGenerationRequest,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ImageAssetResponse:
+    try:
+        return generate_image_asset(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/users/{user_id}/image-assets", response_model=list[ImageAssetResponse])
+def list_image_assets_endpoint(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[ImageAssetResponse]:
+    try:
+        return list_image_assets(repo, user_id, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/assets/{asset_id}/content")
+def get_image_asset_content_endpoint(
+    asset_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> FileResponse:
+    try:
+        path, media_type = get_image_asset_path(repo, asset_id)
+        return FileResponse(path, media_type=media_type, filename=path.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Image asset not found: {asset_id}") from exc
+
+
+@app.delete("/users/{user_id}/image-assets/{asset_id}", response_model=DeleteResponse)
+def delete_image_asset_endpoint(
+    user_id: str,
+    asset_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> DeleteResponse:
+    try:
+        delete_image_asset(repo, user_id, asset_id)
+        return DeleteResponse(ok=True, message=f"Deleted image asset {asset_id}.")
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -419,6 +615,28 @@ def list_linkedin_post_engagers_endpoint(
 ) -> list[PostEngagerResponse]:
     try:
         return list_linkedin_post_engagers(repo, user_id, post_id, engagement_type, connection_degree, limit)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/users/{user_id}/linkedin/prospects", response_model=list[LinkedInProspectResponse])
+def list_linkedin_prospects_endpoint(
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+    engagement_type: str | None = Query(default=None),
+    connection_degree: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[LinkedInProspectResponse]:
+    try:
+        return list_linkedin_prospects(
+            repo,
+            user_id,
+            engagement_type=engagement_type,
+            connection_degree=connection_degree,
+            search=search,
+            limit=limit,
+        )
     except KeyError as exc:
         raise _not_found(exc) from exc
 

@@ -242,3 +242,184 @@ export type DeleteResponse = {
   ok: boolean;
   message: string;
 };
+
+export type OwnPostResponse = {
+  user_id: string;
+  post_id: string;
+  post_url: string;
+  source: string;
+  text: string;
+  created_at_text?: string;
+  estimated_posted_at?: string;
+  first_seen_at?: string;
+  last_scraped_at?: string;
+  reaction_count: number;
+  comment_count: number;
+  impression_count: number;
+  scrape_status: string;
+  status: string;
+};
+
+export type PostEngagerResponse = {
+  user_post_id: string;
+  user_id: string;
+  post_id: string;
+  post_url: string;
+  profile_key: string;
+  profile_url: string;
+  profile_urn: string;
+  name: string;
+  headline: string;
+  connection_degree: string;
+  engagement_types: string[];
+  comment_text: string;
+  comment_permalink: string;
+  comment_urn: string;
+  comment_text_hash: string;
+  comment_timestamp_text: string;
+  scraped_at: string;
+  source: string;
+};
+
+export type LinkedInProspectResponse = {
+  prospect_id: string;
+  user_id: string;
+  profile_key: string;
+  profile_url: string;
+  profile_urn: string;
+  name: string;
+  headline: string;
+  connection_degree: string;
+  engagement_types: string[];
+  engagement_count: number;
+  source_post_ids: string[];
+  source_post_count: number;
+  latest_comment_text: string;
+  last_engaged_at: string;
+  latest_action_type: string;
+  latest_action_status: string;
+  can_reply: boolean;
+  can_dm: boolean;
+  can_connect: boolean;
+};
+
+export type PostEngagementScrapeResponse = {
+  user_id: string;
+  post_id: string;
+  like_count: number;
+  comment_count: number;
+  engagers_saved: number;
+  warnings: string[];
+  errors: Array<{ message?: string }>;
+  engagers: PostEngagerResponse[];
+};
+
+export type LinkedInActionResult = {
+  profile_url: string;
+  profile_key: string;
+  action_id: string;
+  action_type: string;
+  status: string;
+  skip_reason: string;
+  error_message: string;
+  final_text: string;
+};
+
+export type LinkedInActionBatchResponse = {
+  user_id: string;
+  post_id: string;
+  action_type: string;
+  results: LinkedInActionResult[];
+};
+
+export type LinkedInActionLogResponse = LinkedInActionResult & {
+  user_id: string;
+  post_id: string;
+  requested_text: string;
+  created_at: string;
+  started_at: string;
+  finished_at: string;
+};
+
+export type ContentItemStatus = "idea" | "in_progress" | "ready" | "published";
+
+export type ContentItemResponse = {
+  user_id: string;
+  content_id: string;
+  thread_id: string;
+  title: string;
+  body: string;
+  status: ContentItemStatus;
+  topic_source: string;
+  source: Record<string, unknown>;
+  assets: string[];
+  scheduled_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContentSourceResponse = {
+  url: string;
+  canonical_url: string;
+  title: string;
+  description: string;
+  text: string;
+  word_count: number;
+  content_type: string;
+};
+
+export type PostBuilderGenerateResponse = {
+  user_id: string;
+  source_url: string;
+  source_title: string;
+  threads: ThreadResponse[];
+};
+
+export type CarouselSlide = {
+  slide_id: string;
+  eyebrow: string;
+  title: string;
+  body: string;
+};
+
+export type CarouselResponse = {
+  user_id: string;
+  carousel_id: string;
+  title: string;
+  topic: string;
+  audience: string;
+  tone: string;
+  theme: string;
+  slides: CarouselSlide[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImageAssetResponse = {
+  user_id: string;
+  asset_id: string;
+  prompt: string;
+  revised_prompt: string;
+  model: string;
+  mime_type: string;
+  aspect_ratio: string;
+  style: string;
+  asset_url: string;
+  created_at: string;
+};
+
+export type BrainstormResponse = {
+  user_id: string;
+  action: string;
+  topic: string;
+  ideas: Array<{
+    title: string;
+    summary: string;
+    post_angle: string;
+    source_url: string;
+  }>;
+  research_suggestions: string[];
+  provider: string;
+  model: string;
+};

@@ -39,3 +39,21 @@ export const REFINE_PRESETS = [
   "Rewrite for founders",
   "Add bullet points",
 ];
+
+export const IMAGE_STYLE_OPTIONS = [
+  "Default",
+  "Abstract",
+  "Anime",
+  "Editorial",
+  "Flat Design",
+  "Gothic",
+  "Impressionism",
+  "Minimalist",
+  "Papercut",
+  "Photorealistic",
+  "Pixel Art",
+  "Process",
+  "Steampunk",
+  "Surreal",
+  "Van Gogh",
+];

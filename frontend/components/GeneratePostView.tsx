@@ -1,26 +1,29 @@
 "use client";
 
-import { ArrowRight, Loader2, PenLine, Send, Sparkles } from "lucide-react";
+import { ArrowRight, ExternalLink, Image as ImageIcon, Loader2, PenLine, Send, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import {
+  backendAssetUrl,
   DEFAULT_USER_ID,
   fetchThread,
   fetchThreads,
   fetchUserData,
+  generateImageAsset,
   generatePost,
   refinePost,
 } from "@/lib/api";
 import {
+  IMAGE_STYLE_OPTIONS,
   LENGTH_OPTIONS,
   REFINE_PRESETS,
   TONE_OPTIONS,
   WRITING_STYLE_OPTIONS,
 } from "@/lib/constants";
 import { compactDate, displayName, previewText, sortThreads, threadTitle } from "@/lib/format";
-import type { ThreadResponse, ThreadSummary, UserDataResponse } from "@/lib/types";
+import type { ImageAssetResponse, ThreadResponse, ThreadSummary, UserDataResponse } from "@/lib/types";
 
 export function GeneratePostView() {
   const searchParams = useSearchParams();
@@ -33,6 +36,10 @@ export function GeneratePostView() {
   const [writingStyle, setWritingStyle] = useState(WRITING_STYLE_OPTIONS[0]);
   const [customInstruction, setCustomInstruction] = useState("");
   const [thread, setThread] = useState<ThreadResponse | null>(null);
+  const [imageStyle, setImageStyle] = useState(IMAGE_STYLE_OPTIONS[0]);
+  const [imageAsset, setImageAsset] = useState<ImageAssetResponse | null>(null);
+  const [generatingImage, setGeneratingImage] = useState(false);
+  const [imageError, setImageError] = useState("");
   const [busy, setBusy] = useState(false);
   const [refining, setRefining] = useState("");
   const [error, setError] = useState("");
@@ -124,6 +131,26 @@ export function GeneratePostView() {
     }
   }
 
+  async function handleGenerateImage() {
+    if (!thread?.current_post.trim()) return;
+    setGeneratingImage(true);
+    setImageError("");
+    try {
+      const result = await generateImageAsset({
+        user_id: DEFAULT_USER_ID,
+        prompt: `Supporting visual for: ${(thread.topic || thread.current_post).trim().slice(0, 240)}`,
+        post_text: thread.current_post.trim(),
+        aspect_ratio: "4:5",
+        style: imageStyle,
+      });
+      setImageAsset(result);
+    } catch (exc) {
+      setImageError(exc instanceof Error ? exc.message : "Could not generate the image.");
+    } finally {
+      setGeneratingImage(false);
+    }
+  }
+
   return (
     <AppShell
       active="generate"
@@ -208,6 +235,42 @@ export function GeneratePostView() {
           {thread ? (
             <>
               <textarea className="post-output" value={thread.current_post} readOnly rows={16} />
+
+              <div className="context-image-panel">
+                <div className="context-image-heading">
+                  <div>
+                    <h3>Post image</h3>
+                    <p>The current post is used automatically as image context.</p>
+                  </div>
+                  <ImageIcon size={19} />
+                </div>
+                <div className="context-image-controls">
+                  <label className="field">
+                    <span>Style</span>
+                    <select value={imageStyle} onChange={(event) => setImageStyle(event.target.value)}>
+                      {IMAGE_STYLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+                    </select>
+                  </label>
+                  <button className="primary-button" type="button" onClick={handleGenerateImage} disabled={generatingImage}>
+                    {generatingImage ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}
+                    {generatingImage ? "Generating..." : "Generate image"}
+                  </button>
+                </div>
+                {imageError ? <div className="error-banner">{imageError}</div> : null}
+                {imageAsset ? (
+                  <div className="context-image-result">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={backendAssetUrl(imageAsset.asset_url)} alt="Generated visual for the current post" />
+                    <div>
+                      <strong>{imageAsset.style}</strong>
+                      <span>Saved to the local image asset library.</span>
+                      <a className="secondary-button compact" href={backendAssetUrl(imageAsset.asset_url)} target="_blank" rel="noreferrer">
+                        <ExternalLink size={15} /> Open image
+                      </a>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
 
               <div className="refine-panel">
                 <h3>Refine with AI</h3>
