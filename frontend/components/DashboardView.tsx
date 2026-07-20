@@ -106,7 +106,7 @@ export function DashboardView() {
 
           <section className="page-section section-heading-row">
             <h3>Continue Working</h3>
-            <button className="text-button" type="button">View all drafts</button>
+            <Link className="text-button" href="/content">View all drafts</Link>
           </section>
 
           <section className="draft-grid">
@@ -132,7 +132,7 @@ export function DashboardView() {
 
           <section className="page-section section-heading-row activity-heading">
             <h3>Latest Creator Activity</h3>
-            <button className="text-button" type="button">Manage creators</button>
+            <Link className="text-button" href="/creators">Manage creators</Link>
           </section>
 
           <section className="creator-activity-grid">

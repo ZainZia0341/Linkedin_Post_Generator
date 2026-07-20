@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import {
-  Bell,
   Brain,
   Clock,
   Columns3,
@@ -18,7 +17,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ThreadSummary } from "@/lib/types";
-import { compactDate, initials, threadTitle } from "@/lib/format";
+import { compactDate, threadTitle } from "@/lib/format";
 
 type AppShellProps = {
   active: "dashboard" | "generate" | "builder" | "content" | "carousels" | "images" | "prospects" | "networking" | "brainstorm" | "creators" | "posts" | "activity" | "engagement" | "history" | "settings";
@@ -50,13 +49,9 @@ export function AppShell({
   title,
   subtitle,
   eyebrowLabel,
-  userName,
-  userTitle = "",
   threads = [],
   children,
 }: AppShellProps) {
-  const displayUserName = userName || "User";
-  const userInitials = initials(displayUserName);
   const resolvedEyebrow = eyebrowLabel === undefined ? active : eyebrowLabel;
   const recentThreads = threads.filter((thread) => thread.topic_source !== "comment_generation").slice(0, 5);
 
@@ -109,13 +104,6 @@ export function AppShell({
           </section>
         ) : null}
 
-        <div className="sidebar-user">
-          <div className="avatar small">{userInitials}</div>
-          <div className="sidebar-user-copy">
-            <strong>{displayUserName}</strong>
-            <span>{userTitle || "Profile"}</span>
-          </div>
-        </div>
       </aside>
 
       <main className="main-area">
@@ -124,12 +112,6 @@ export function AppShell({
             {resolvedEyebrow ? <p className="eyebrow">{resolvedEyebrow}</p> : null}
             <h1>{title}</h1>
             {subtitle ? <p>{subtitle}</p> : null}
-          </div>
-          <div className="topbar-actions">
-            <button className="icon-button" type="button" aria-label="Notifications" title="Notifications">
-              <Bell size={17} />
-            </button>
-            <div className="avatar">{userInitials}</div>
           </div>
         </header>
         {children}

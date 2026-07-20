@@ -23,7 +23,7 @@ The existing synchronous LinkedIn post sync, engager scrape, reply, connection r
 - Keep every currently working endpoint and response contract unchanged.
 - Build new functionality through additive services, routes, fields, and workers.
 - Keep the existing creator post scraper and creator profile scraper independent from the experimental own-post networking APIs.
-- Do not enable automatic LinkedIn write actions until dry-run, eligibility checks, idempotency, limits, and durable job tracking are complete.
+- Do not enable automatic LinkedIn write actions until preview mode, eligibility checks, idempotency, limits, and durable job tracking are complete.
 - Treat LinkedIn selectors as replaceable configuration because the DOM changes frequently.
 - Prefer official LinkedIn publishing and analytics APIs when approved access is available. Playwright remains a less stable fallback.
 
@@ -125,7 +125,7 @@ For local development an existing job record pattern can be reused. For producti
 - Cooldown after challenge, login failure, rate warning, or unexpected page state.
 - Idempotency key on campaign creation and each recipient action.
 - Do not retry ambiguous write failures automatically. Verify outcome first.
-- Keep `dry_run: true` as the default for all new write-action APIs.
+- Keep preview mode (`dry_run: true` in the existing API contract) as the default for all new write-action APIs.
 - Store a reason for every skipped recipient.
 
 ## Phase 2: Prospect Hub
@@ -242,7 +242,7 @@ There is no reliable engagement webhook in the current scraper architecture. Aut
 2. Scrape engagement for changed/recent posts.
 3. Upsert newly discovered prospects.
 4. Evaluate an enabled user policy.
-5. Create a dry-run or approval campaign, or execute only when explicit auto mode has been accepted.
+5. Create a preview or approval campaign, or execute only when explicit auto mode has been accepted.
 
 The policy must store its schedule, last run, selected post scope, action type, eligibility rules, message template, limits, and enabled state.
 
@@ -403,7 +403,7 @@ Trying to force campaigns, 90-day time series, content assets, and cross-post pr
 ### Controlled live tests
 
 - Use a dedicated test LinkedIn account and small recipient sets.
-- Run dry-run first, then one real action of each type.
+- Run preview mode first, then one Live Playwright action of each type.
 - Verify the LinkedIn result after every write before increasing limits.
 - Test login expiry, challenge pages, missing dialogs, duplicate actions, and interrupted browser sessions.
 

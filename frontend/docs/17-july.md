@@ -9,7 +9,7 @@ This document defines the frontend plan and records the isolated Taplio-style sc
 Added isolated routes and components:
 
 - `/prospects`: own-post sync/tracking, engagement scraping, account-wide deduplicated prospects, filters, and eligibility indicators.
-- `/networking`: selected-post recipients, reply/connect/DM actions, dry-run default, real-action confirmation, per-recipient results, and action history.
+- `/networking`: selected-post recipients, reply/connect/DM actions, preview-mode default, Live Playwright confirmation, per-recipient results, and action history.
 - `/content`: four-column Ideas, In Progress, Ready to Post, and Published pipeline backed by content statuses.
 - `/content/post-builder`: idea/URL input, topic suggestions, variations, formats, tones, angles, structures, lengths, multiple drafts, copy, and AI thread refinement.
 - `/brainstorm`: goal-based idea research, source links, copy actions, follow-up directions, and direct handoff into a prefilled Post Builder.
@@ -37,7 +37,7 @@ The new work must remain separate from the current Creators, Ready to Comment, G
 
 - Syncing and listing the user's own LinkedIn posts through Prospect Hub.
 - Scraping and listing engagers for a tracked own post.
-- Sending experimental replies, connection requests, and DMs through Networking with dry-run as the default.
+- Sending experimental replies, connection requests, and DMs through Networking with preview mode as the default.
 - Listing experimental LinkedIn action logs in Networking.
 - Generating and managing post-builder drafts, content statuses, carousels, and images.
 
@@ -75,7 +75,7 @@ Existing routes should not import new feature state. New screens may link to exi
 | Screen | Backend readiness | Frontend decision |
 | --- | --- | --- |
 | Prospect Hub | MVP implemented | Uses the account-wide aggregation endpoint; production cursor pagination and normalized storage remain. |
-| Networking | Experimental UI implemented | Uses current low-level action APIs with dry-run default and explicit confirmation. Durable campaigns remain. |
+| Networking | Experimental UI implemented | Uses current low-level action APIs with preview mode by default and explicit Live Playwright confirmation. Durable campaigns remain. |
 | Analytics | Missing historical API | Build shell/design after analytics response contract is approved; do not fake charts from latest counts. |
 | Article/URL generation | Implemented | Secure extraction and builder integration are available. |
 | Content workflow | MVP implemented | Four statuses reuse existing thread records. |
@@ -157,7 +157,7 @@ Create controlled campaigns from selected prospects without mixing campaign stat
 3. Configure shared or personalized content.
 4. Request backend preview.
 5. Review eligible and skipped recipients.
-6. Confirm a dry run or real campaign.
+6. Confirm a preview or Live Playwright campaign.
 7. Navigate to campaign progress.
 
 ### Reply campaign
@@ -193,7 +193,7 @@ Create controlled campaigns from selected prospects without mixing campaign stat
 
 ### Safety UX
 
-- Default to dry run.
+- Default to preview mode.
 - Use explicit confirmation for real LinkedIn writes.
 - Keep buttons disabled while a request is being accepted.
 - Do not optimistically mark an action sent.
@@ -368,7 +368,7 @@ When enabled, the screen needs:
 
 1. Add isolated routes and feature module shells after backend contracts are accepted.
 2. Build Prospect Hub read-only list and detail drawer.
-3. Add networking campaign preview and dry-run progress.
+3. Add networking campaign preview and preview-mode progress.
 4. Enable real actions only after backend safety controls and live tests pass.
 5. Build analytics once snapshots and the period API contain real data.
 6. Build content workflow and drafts.

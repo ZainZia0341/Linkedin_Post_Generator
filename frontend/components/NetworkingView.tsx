@@ -24,6 +24,11 @@ import type {
 
 type ActionType = "reply" | "connect" | "dm";
 
+function displayActionReason(value: string) {
+  if (value === "dry_run") return "Preview mode";
+  return value.replaceAll("_", " ");
+}
+
 export function NetworkingView() {
   const [userData, setUserData] = useState<UserDataResponse | null>(null);
   const [posts, setPosts] = useState<OwnPostResponse[]>([]);
@@ -33,7 +38,7 @@ export function NetworkingView() {
   const [selectedProfiles, setSelectedProfiles] = useState<Set<string>>(new Set());
   const [actionType, setActionType] = useState<ActionType>("connect");
   const [message, setMessage] = useState("Thanks for engaging with my post. I appreciated your perspective.");
-  const [dryRun, setDryRun] = useState(true);
+  const [livePlaywright, setLivePlaywright] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -110,7 +115,7 @@ export function NetworkingView() {
 
   async function executeAction() {
     if (!selectedPostId || !selectedProfiles.size || !message.trim()) return;
-    if (!dryRun && !window.confirm(`Send ${actionType} action to ${selectedProfiles.size} selected people?`)) return;
+    if (livePlaywright && !window.confirm(`Send ${actionType} action to ${selectedProfiles.size} selected people?`)) return;
     setBusy(true);
     setError("");
     setResult(null);
@@ -123,7 +128,7 @@ export function NetworkingView() {
           post_id: selectedPostId,
           profile_urls: profileUrls,
           reply_text: message.trim(),
-          dry_run: dryRun,
+          dry_run: !livePlaywright,
         });
       } else if (actionType === "dm") {
         response = await sendDirectMessages({
@@ -131,7 +136,7 @@ export function NetworkingView() {
           post_id: selectedPostId,
           profile_urls: profileUrls,
           message: message.trim(),
-          dry_run: dryRun,
+          dry_run: !livePlaywright,
         });
       } else {
         response = await sendConnectionRequests({
@@ -140,7 +145,7 @@ export function NetworkingView() {
           profile_urls: profileUrls,
           engagement_types: ["like", "comment"],
           note: message.trim(),
-          dry_run: dryRun,
+          dry_run: !livePlaywright,
         });
       }
       setResult(response);
@@ -216,13 +221,13 @@ export function NetworkingView() {
               <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={8} />
             </label>
             <label className="switch-row">
-              <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />
-              <span><strong>Dry run</strong><small>Validate and log without touching LinkedIn.</small></span>
+              <input type="checkbox" checked={livePlaywright} onChange={(event) => setLivePlaywright(event.target.checked)} />
+              <span><strong>Live Playwright</strong><small>Perform the selected actions on LinkedIn.</small></span>
             </label>
             {error ? <div className="error-banner">{error}</div> : null}
             <button className="primary-button full" type="button" onClick={executeAction} disabled={busy || !selectedProfiles.size || !message.trim()}>
-              {busy ? <Loader2 className="spin" size={17} /> : dryRun ? <ShieldCheck size={17} /> : <Send size={17} />}
-              {dryRun ? "Run preview" : `Send ${actionType}`}
+              {busy ? <Loader2 className="spin" size={17} /> : livePlaywright ? <Send size={17} /> : <ShieldCheck size={17} />}
+              {livePlaywright ? `Send ${actionType}` : "Run preview"}
             </button>
 
             {result ? (
@@ -230,7 +235,7 @@ export function NetworkingView() {
                 <h3>Results</h3>
                 {result.results.map((item) => (
                   <div className="action-result-row" key={item.action_id || item.profile_key}>
-                    <span><strong>{item.profile_url.split("/in/")[1]?.replaceAll("/", "") || item.profile_key}</strong><small>{item.skip_reason || item.error_message || item.action_type}</small></span>
+                    <span><strong>{item.profile_url.split("/in/")[1]?.replaceAll("/", "") || item.profile_key}</strong><small>{displayActionReason(item.skip_reason || item.error_message || item.action_type)}</small></span>
                     <span className={`status-chip ${item.status}`}>{item.status}</span>
                   </div>
                 ))}
@@ -244,7 +249,7 @@ export function NetworkingView() {
           {logs.length ? (
             <div className="action-log-table-wrap">
               <table className="prospect-table"><thead><tr><th>Action</th><th>Profile</th><th>Status</th><th>Reason</th><th>Created</th></tr></thead>
-                <tbody>{logs.slice(0, 30).map((log) => <tr key={log.action_id}><td>{log.action_type}</td><td>{previewText(log.profile_url, 64)}</td><td><span className={`status-chip ${log.status}`}>{log.status}</span></td><td>{log.skip_reason || log.error_message || "-"}</td><td>{compactDate(log.created_at)}</td></tr>)}</tbody>
+                <tbody>{logs.slice(0, 30).map((log) => <tr key={log.action_id}><td>{log.action_type}</td><td>{previewText(log.profile_url, 64)}</td><td><span className={`status-chip ${log.status}`}>{log.status}</span></td><td>{displayActionReason(log.skip_reason || log.error_message || "-")}</td><td>{compactDate(log.created_at)}</td></tr>)}</tbody>
               </table>
             </div>
           ) : <div className="empty-mini">No actions have been recorded.</div>}

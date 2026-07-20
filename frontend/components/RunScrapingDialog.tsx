@@ -11,7 +11,7 @@ import type {
   ScrapeJobStatusResponse,
 } from "@/lib/types";
 
-type Scope = "all" | "selected";
+type Scope = "all" | "never_scraped" | "selected";
 
 type RunScrapingDialogProps = {
   creators: CreatorResponse[];
@@ -47,6 +47,10 @@ export function RunScrapingDialog({
   const [jobStatus, setJobStatus] = useState<ScrapeJobStatusResponse | null>(null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const neverScrapedIds = useMemo(
+    () => creators.filter((creator) => !creator.last_checked_at).map((creator) => creator.creator_id),
+    [creators],
+  );
   const filteredCreators = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return creators.slice(0, 80);
@@ -58,7 +62,8 @@ export function RunScrapingDialog({
       .slice(0, 80);
   }, [creators, query]);
   const selectedCreators = creators.filter((creator) => selectedSet.has(creator.creator_id));
-  const targetCount = scope === "all" ? creators.length : selectedIds.length;
+  const targetCreatorIds = scope === "selected" ? selectedIds : scope === "never_scraped" ? neverScrapedIds : undefined;
+  const targetCount = targetCreatorIds?.length ?? creators.length;
   const canRun = ENABLE_SCRAPING && targetCount > 0 && !busy;
 
   function toggleCreator(creatorId: string) {
@@ -84,14 +89,13 @@ export function RunScrapingDialog({
     try {
       const response = await runRecentScrape({
         user_id: DEFAULT_USER_ID,
-        creator_ids: scope === "selected" ? selectedIds : undefined,
+        creator_ids: targetCreatorIds,
         max_posts: maxPosts,
         window_hours: windowHours,
         launch_delay_seconds: 3,
       }, setJobStatus);
       if (response.errors.length) {
-        const firstError = response.errors[0];
-        throw new Error(firstError.message || "Scraping completed with errors.");
+        throw new Error(`Scraping completed with ${response.errors.length} creator error${response.errors.length === 1 ? "" : "s"}.`);
       }
       onComplete(response);
     } catch (exc) {
@@ -138,6 +142,18 @@ export function RunScrapingDialog({
                 <span>
                   <strong>All Active Creators</strong>
                   <small>{creators.length} creators tracked</small>
+                </span>
+              </button>
+              <button
+                className={scope === "never_scraped" ? "scope-card selected" : "scope-card"}
+                type="button"
+                onClick={() => setScope("never_scraped")}
+                disabled={lockSelection}
+              >
+                <Search size={18} />
+                <span>
+                  <strong>Never Scraped</strong>
+                  <small>{neverScrapedIds.length} creators not checked yet</small>
                 </span>
               </button>
               <button
@@ -286,8 +302,15 @@ export function RunScrapingDialog({
                   <strong>{jobStatus.errors.length}</strong>
                 </div>
               </div>
-              {jobStatus.errors[0]?.message ? (
-                <p>{jobStatus.errors[0].creator_id ? `${jobStatus.errors[0].creator_id}: ` : ""}{jobStatus.errors[0].message}</p>
+              {jobStatus.errors.length ? (
+                <div className="scrape-error-list" role="list" aria-label="Scraping errors">
+                  {jobStatus.errors.map((item, index) => (
+                    <p role="listitem" key={`${item.creator_id || "error"}-${index}`}>
+                      <strong>{item.creator_id || `Error ${index + 1}`}</strong>
+                      <span>{item.message || "Unknown scraping error."}</span>
+                    </p>
+                  ))}
+                </div>
               ) : null}
             </div>
           ) : null}

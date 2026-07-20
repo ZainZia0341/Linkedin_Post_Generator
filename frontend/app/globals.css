@@ -2611,7 +2611,7 @@ a {
 
 .scrape-scope-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -4569,6 +4569,33 @@ a {
   color: #d97706;
   font-size: 30px;
   font-weight: 900;
+}
+
+.scrape-error-list {
+  display: grid;
+  gap: 7px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.scrape-error-list p {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.scrape-error-list p strong,
+.scrape-error-list p span {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.scrape-error-list p strong {
+  color: var(--danger-text);
 }
 
 .carousel-stage > span {

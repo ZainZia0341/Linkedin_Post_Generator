@@ -377,7 +377,7 @@ class CommentReplyActionRequest(BaseModel):
     reply_text: str = Field(default="Thank you for sharing your thoughts.")
     dry_run: bool = Field(
         default=True,
-        description="When true, only validates targets and writes skipped action logs without touching LinkedIn.",
+        description="Preview mode when true. Set false to perform the selected action through Live Playwright.",
     )
     launch_delay_seconds: float = Field(default=3, ge=0, le=60)
 
