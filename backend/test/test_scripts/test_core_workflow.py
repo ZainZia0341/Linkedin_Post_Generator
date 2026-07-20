@@ -184,6 +184,43 @@ def test_burner_mode_requires_manual_bootstrap(tmp_path, monkeypatch) -> None:
     assert "bootstrap_linkedin_session.py" in result[0]["message"]
 
 
+def test_linkedin_post_normalization_defaults_to_direct_post() -> None:
+    post = linkedin_scraper._normalize_candidate(
+        {
+            "data_urn": "urn:li:activity:123456789",
+            "raw_text": "A direct LinkedIn post with enough content to pass normalization.",
+            "author_name": "Direct Author",
+        }
+    )
+
+    assert post is not None
+    assert post["is_repost"] is False
+    assert post["repost_text"] == ""
+    assert post["original_post_text"] == ""
+
+
+def test_linkedin_repost_normalization_preserves_both_text_layers() -> None:
+    post = linkedin_scraper._normalize_candidate(
+        {
+            "data_urn": "urn:li:activity:987654321",
+            "raw_text": "The complete original post body remains available for comments and refinements.",
+            "author_name": "Reposting Author",
+            "is_repost": True,
+            "repost_text": "This short note explains why I am sharing the original post.",
+            "original_post_text": "The complete original post body remains available for comments and refinements.",
+            "original_author_name": "Original Author",
+            "original_author_url": "https://www.linkedin.com/in/original-author/",
+        }
+    )
+
+    assert post is not None
+    assert post["is_repost"] is True
+    assert post["repost_text"].startswith("This short note")
+    assert post["raw_text"] == post["original_post_text"]
+    assert post["original_author_name"] == "Original Author"
+    assert post["original_author_url"].endswith("/original-author/")
+
+
 def test_generation_graph_offline() -> None:
     style = extract_writing_style(_read_text("sample_previous_post.txt"))
     profile = extract_resume_profile(_read_text("sample_resume.txt"))

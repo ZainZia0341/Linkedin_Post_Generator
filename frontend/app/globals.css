@@ -2497,6 +2497,28 @@ a {
   line-height: 1.55;
 }
 
+.repost-card-section p {
+  margin: 4px 0 0;
+}
+
+.repost-card-section.original {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.post-section-label {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.repost-comment-detail {
+  border-left: 3px solid var(--accent);
+}
+
 .post-card-meta {
   gap: 16px;
   margin-top: 12px;
