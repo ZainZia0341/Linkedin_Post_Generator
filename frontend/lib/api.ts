@@ -149,11 +149,11 @@ export function fetchRecentActivities(userId = DEFAULT_USER_ID, limit = 3) {
   );
 }
 
-export function fetchUserActivities(userId = DEFAULT_USER_ID, limit = 100) {
+export function fetchUserActivities(userId = DEFAULT_USER_ID, limit = 500) {
   return cachedApiFetch<ActivityResponse[]>(`/users/${userId}/activities?limit=${limit}`);
 }
 
-export function getCachedUserActivities(userId = DEFAULT_USER_ID, limit = 100) {
+export function getCachedUserActivities(userId = DEFAULT_USER_ID, limit = 500) {
   return getCachedApiValue<ActivityResponse[]>(`/users/${userId}/activities?limit=${limit}`);
 }
 

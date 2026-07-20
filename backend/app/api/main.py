@@ -636,7 +636,7 @@ def list_creator_activities(
 def list_user_activities(
     user_id: str,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
-    limit: int = Query(default=API_LIST_LIMIT, ge=1, le=100),
+    limit: int = Query(default=500, ge=1, le=500),
 ) -> list[ActivityResponse]:
     return list_all_activities(repo, user_id, limit)
 

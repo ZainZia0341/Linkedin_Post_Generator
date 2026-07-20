@@ -65,12 +65,17 @@ $env:AWS_DEFAULT_REGION="us-east-2"
 $env:APP_ENV="dev"
 $env:DYNAMODB_TABLE_PREFIX="linkedin_post_generator_dev"
 $env:SCRAPING_ENABLED="true"
+$env:SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS="0"
+$env:SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS="240"
 Remove-Item Env:\DYNAMODB_ENDPOINT_URL -ErrorAction SilentlyContinue
 uv run uvicorn app.api.main:app --reload --host 127.0.0.1 --port 7860
 ```
 
 Then run scraping from the local frontend or call the local scrape endpoints.
 The saved data lands in AWS DynamoDB and is readable by the deployed Lambda API.
+Each creator's Playwright launch waits for a newly randomized delay within the
+configured minimum and maximum. Change these shell values, or the matching
+values in `.env`, before starting the backend to use a different range.
 
 ## Vercel Frontend Env
 

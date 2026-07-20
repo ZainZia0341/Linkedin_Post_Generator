@@ -58,6 +58,14 @@ MAX_REVIEW_ATTEMPTS: Final[int] = int(os.getenv("MAX_REVIEW_ATTEMPTS", "3"))
 TAVILY_SEARCH_RESULTS: Final[int] = int(os.getenv("TAVILY_SEARCH_RESULTS", "5"))
 API_LIST_LIMIT: Final[int] = int(_env_value("API_LIST_LIMIT", "10"))
 SCRAPE_MAX_WORKERS: Final[int] = int(_env_value("SCRAPE_MAX_WORKERS", "2"))
+SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS: Final[float] = max(
+    0.0,
+    float(_env_value("SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS", "0")),
+)
+SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS: Final[float] = max(
+    SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
+    float(_env_value("SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS", "240")),
+)
 
 DYNAMODB_ENDPOINT_URL: Final[str] = _env_optional("DYNAMODB_ENDPOINT_URL") or _DEFAULT_DYNAMODB_ENDPOINT_URL
 DYNAMODB_REGION_NAME: Final[str] = _env_value("AWS_REGION", _env_value("AWS_DEFAULT_REGION", "us-east-2"))

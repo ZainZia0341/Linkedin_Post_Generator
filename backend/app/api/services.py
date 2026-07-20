@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import io
 import json
+import random
 import re
 from threading import Lock
 import time
@@ -65,6 +66,8 @@ from app.config import (
     LINKEDIN_AUTOMATION_MODE,
     MAX_REVIEW_ATTEMPTS,
     PROVIDER_MODELS,
+    SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS,
+    SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
     SCRAPE_MAX_WORKERS,
 )
 from app.creator_tracking import get_profile_id, normalize_linkedin_profile_url
@@ -132,6 +135,27 @@ def _sleep_before_playwright_launch(launch_delay_seconds: float | int | None) ->
     delay = DEFAULT_PLAYWRIGHT_LAUNCH_DELAY_SECONDS if launch_delay_seconds is None else float(launch_delay_seconds)
     if delay > 0:
         time.sleep(delay)
+
+
+def _sleep_before_creator_playwright_launch(launch_delay_seconds: float | int | None) -> None:
+    if SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS <= 0:
+        _sleep_before_playwright_launch(launch_delay_seconds)
+        return
+    delay = random.uniform(
+        SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
+        SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS,
+    )
+    if delay > 0:
+        print(f"Waiting {delay:.1f} seconds before this LinkedIn creator Playwright launch.")
+        time.sleep(delay)
+
+
+def _creator_scrape_worker_count(creator_count: int) -> int:
+    if creator_count > 1 and SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS > 0:
+        return 1
+    if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner":
+        return 1
+    return max(1, SCRAPE_MAX_WORKERS)
 
 
 def provider_model(provider: str | None, model: str | None) -> tuple[str, str]:
@@ -556,12 +580,12 @@ def scrape_creator_profile_details(
     profiles: list[CreatorProfileDetailsResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        _sleep_before_playwright_launch(request.launch_delay_seconds)
+        _sleep_before_creator_playwright_launch(request.launch_delay_seconds)
         return creator, fetch_profile_details(creator["profile_url"])
 
-    max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
+    max_workers = _creator_scrape_worker_count(len(creators))
     if max_workers == 1 and len(creators) > 1:
-        print("Running creator profile scrapes sequentially because the active LinkedIn mode uses a shared browser profile.")
+        print("Running creator profile scrapes sequentially with the configured inter-creator delay.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
@@ -1000,13 +1024,13 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
     new_activities: list[ActivityResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        _sleep_before_playwright_launch(request.launch_delay_seconds)
+        _sleep_before_creator_playwright_launch(request.launch_delay_seconds)
         posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
         return creator, posts
 
-    max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
+    max_workers = _creator_scrape_worker_count(len(creators))
     if max_workers == 1 and len(creators) > 1:
-        print("Running creator scrapes sequentially because the active LinkedIn mode uses a shared browser profile.")
+        print("Running creator post scrapes sequentially with the configured inter-creator delay.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
@@ -1082,13 +1106,13 @@ def scrape_creators_recent_24h(
     newly_saved_count = 0
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        _sleep_before_playwright_launch(request.launch_delay_seconds)
+        _sleep_before_creator_playwright_launch(request.launch_delay_seconds)
         posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
         return creator, posts
 
-    max_workers = 1 if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner" else max(1, SCRAPE_MAX_WORKERS)
+    max_workers = _creator_scrape_worker_count(len(creators))
     if max_workers == 1 and len(creators) > 1:
-        print("Running creator scrapes sequentially because the active LinkedIn mode uses a shared browser profile.")
+        print("Running creator post scrapes sequentially with the configured inter-creator delay.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(scrape_one, creator): creator for creator in creators}

@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import {
   DEFAULT_USER_ID,
@@ -248,7 +248,7 @@ export function CreatorsView() {
         setProfileJobStatus,
       );
       if (result.errors.length) {
-        throw new Error(result.errors[0]?.message || "Profile scraping completed with errors.");
+        throw new Error(`Profile scraping completed with ${result.errors.length} creator error${result.errors.length === 1 ? "" : "s"}.`);
       }
       await load();
       showSuccess(
@@ -766,8 +766,7 @@ function AddCreatorDialog({
       if (ENABLE_SCRAPING) {
         const profileResult = await scrapeCreatorProfiles(DEFAULT_USER_ID, [creator.creator_id], 3, setProfileJobStatus);
         if (profileResult.errors.length) {
-          const firstError = profileResult.errors[0];
-          throw new Error(firstError.message || "Creator was added, but profile scraping failed.");
+          throw new Error(`Creator was added, but profile scraping returned ${profileResult.errors.length} error${profileResult.errors.length === 1 ? "" : "s"}.`);
         }
       }
       onAdded(
@@ -867,7 +866,7 @@ function BulkImportDialog({
         <header className="drawer-header">
           <div>
             <h2 id="bulk-import-title">Bulk Import Creators</h2>
-            <p>Upload CSV, Excel or TXT files containing LinkedIn profile URLs.</p>
+            <p>Upload a file or paste text containing LinkedIn profile URLs.</p>
           </div>
           <button className="icon-button" type="button" onClick={requestClose} disabled={locked} aria-label="Close">
             <X size={20} />
@@ -896,13 +895,16 @@ function BulkImportForm({
   onDataChanged: () => void;
   onBusyChange: (busy: boolean) => void;
 }) {
+  const [importSource, setImportSource] = useState<"file" | "paste">("file");
   const [file, setFile] = useState<File | null>(null);
+  const [pastedText, setPastedText] = useState("");
   const [previewBusy, setPreviewBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<BulkCreatorPreviewResponse | null>(null);
   const [result, setResult] = useState<BulkCreatorImportResponse | null>(null);
   const [profileJobStatus, setProfileJobStatus] = useState<ScrapeJobStatusResponse | null>(null);
   const [error, setError] = useState("");
+  const previewRequestId = useRef(0);
 
   const skippedExisting = result?.skipped_existing_creators ?? [];
   const skippedDuplicates = result?.skipped_duplicate_creators ?? [];
@@ -916,7 +918,52 @@ function BulkImportForm({
     onBusyChange(previewBusy || busy);
   }, [busy, onBusyChange, previewBusy]);
 
+  useEffect(() => {
+    if (importSource !== "paste") return;
+
+    const requestId = ++previewRequestId.current;
+    setFile(null);
+    setPreview(null);
+    setResult(null);
+    setProfileJobStatus(null);
+    setError("");
+    setPreviewBusy(false);
+    if (!pastedText.trim()) return;
+
+    const timer = window.setTimeout(async () => {
+      const pastedFile = new File([pastedText], "pasted-linkedin-urls.txt", { type: "text/plain" });
+      setFile(pastedFile);
+      setPreviewBusy(true);
+      try {
+        const response = await previewCreatorImport(DEFAULT_USER_ID, pastedFile);
+        if (previewRequestId.current === requestId) setPreview(response);
+      } catch (exc) {
+        if (previewRequestId.current === requestId) {
+          setError(exc instanceof Error ? exc.message : "Could not check the pasted text.");
+        }
+      } finally {
+        if (previewRequestId.current === requestId) setPreviewBusy(false);
+      }
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [importSource, pastedText]);
+
+  function changeImportSource(nextSource: "file" | "paste") {
+    if (nextSource === importSource) return;
+    previewRequestId.current += 1;
+    setImportSource(nextSource);
+    setFile(null);
+    setPastedText("");
+    setPreview(null);
+    setResult(null);
+    setProfileJobStatus(null);
+    setPreviewBusy(false);
+    setError("");
+  }
+
   async function handleFileChange(nextFile: File | null) {
+    const requestId = ++previewRequestId.current;
     setFile(nextFile);
     setPreview(null);
     setResult(null);
@@ -927,17 +974,19 @@ function BulkImportForm({
     setPreviewBusy(true);
     try {
       const response = await previewCreatorImport(DEFAULT_USER_ID, nextFile);
-      setPreview(response);
+      if (previewRequestId.current === requestId) setPreview(response);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "Could not read the uploaded file.");
+      if (previewRequestId.current === requestId) {
+        setError(exc instanceof Error ? exc.message : "Could not read the uploaded file.");
+      }
     } finally {
-      setPreviewBusy(false);
+      if (previewRequestId.current === requestId) setPreviewBusy(false);
     }
   }
 
   async function submit() {
     if (!file) {
-      setError("Choose a CSV, XLSX, or TXT file first.");
+      setError(importSource === "paste" ? "Paste text containing LinkedIn profile URLs first." : "Choose a CSV, XLSX, or TXT file first.");
       return;
     }
     setBusy(true);
@@ -962,8 +1011,7 @@ function BulkImportForm({
           setProfileJobStatus,
         );
         if (profileResult.errors.length) {
-          const firstError = profileResult.errors[0];
-          throw new Error(firstError.message || "Creators were imported, but profile scraping failed.");
+          throw new Error(`Creators were imported, but profile scraping returned ${profileResult.errors.length} creator error${profileResult.errors.length === 1 ? "" : "s"}.`);
         }
       }
       onImported(
@@ -981,21 +1029,60 @@ function BulkImportForm({
   return (
     <>
       <div className="drawer-body import-body">
-        <label className="upload-dropzone">
-          <span className="upload-icon-bubble">
-            {previewBusy ? <Loader2 className="spin" size={24} /> : <UploadCloud size={25} />}
-          </span>
-          <strong>Drag & Drop your file here</strong>
-          <span>Supported formats: CSV, XLSX, TXT</span>
-          <span className="browse-file-button">Browse Files</span>
-          <input
-            type="file"
-            accept=".csv,.txt,.xlsx"
-            onChange={(event) => {
-              void handleFileChange(event.target.files?.[0] ?? null);
-            }}
-          />
-        </label>
+        <div className="import-source-tabs" role="tablist" aria-label="Import source">
+          <button
+            className={importSource === "file" ? "selected" : ""}
+            type="button"
+            role="tab"
+            aria-selected={importSource === "file"}
+            onClick={() => changeImportSource("file")}
+            disabled={busy}
+          >
+            <UploadCloud size={16} />
+            Upload file
+          </button>
+          <button
+            className={importSource === "paste" ? "selected" : ""}
+            type="button"
+            role="tab"
+            aria-selected={importSource === "paste"}
+            onClick={() => changeImportSource("paste")}
+            disabled={busy}
+          >
+            <FileText size={16} />
+            Paste text
+          </button>
+        </div>
+
+        {importSource === "file" ? (
+          <label className="upload-dropzone">
+            <span className="upload-icon-bubble">
+              {previewBusy ? <Loader2 className="spin" size={24} /> : <UploadCloud size={25} />}
+            </span>
+            <strong>Drag & Drop your file here</strong>
+            <span>Supported formats: CSV, XLSX, TXT</span>
+            <span className="browse-file-button">Browse Files</span>
+            <input
+              type="file"
+              accept=".csv,.txt,.xlsx"
+              onChange={(event) => {
+                void handleFileChange(event.target.files?.[0] ?? null);
+              }}
+            />
+          </label>
+        ) : (
+          <label className="paste-import-panel">
+            <span>Profile links</span>
+            <textarea
+              value={pastedText}
+              onChange={(event) => setPastedText(event.target.value)}
+              placeholder="Paste text containing LinkedIn profile URLs"
+              rows={10}
+              disabled={busy}
+            />
+            <small>{previewBusy ? "Checking pasted URLs..." : "URLs are checked automatically after you paste."}</small>
+          </label>
+        )}
 
         {preview && !result ? (
           <div className="import-result-summary">
@@ -1080,8 +1167,15 @@ function ProfileScrapeProgress({ status }: { status: ScrapeJobStatusResponse }) 
           <strong>{status.errors.length}</strong>
         </div>
       </div>
-      {status.errors[0]?.message ? (
-        <p>{status.errors[0].creator_id ? `${status.errors[0].creator_id}: ` : ""}{status.errors[0].message}</p>
+      {status.errors.length ? (
+        <div className="scrape-error-list" role="list" aria-label="Profile scraping errors">
+          {status.errors.map((item, index) => (
+            <p role="listitem" key={`${item.creator_id || "error"}-${index}`}>
+              <strong>{item.creator_id || `Error ${index + 1}`}</strong>
+              <span>{item.message || "Unknown profile scraping error."}</span>
+            </p>
+          ))}
+        </div>
       ) : null}
     </div>
   );
