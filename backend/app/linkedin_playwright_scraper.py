@@ -196,8 +196,8 @@ def _scroll_recent_posts(page: Any) -> None:
         _random_pause(0.8, 1.4)
 
 
-def _extract_candidates(page: Any) -> list[dict[str, str]]:
-    script = """
+def _extract_candidates(page: Any) -> list[dict[str, Any]]:
+    script = r"""
     () => {
       const roots = new Set();
       const rootSelectors = [
@@ -217,6 +217,7 @@ def _extract_candidates(page: Any) -> list[dict[str, str]]:
         });
       }
 
+      const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
       const textSelectors = [
         '.update-components-text',
         '.feed-shared-update-v2__description',
@@ -224,16 +225,123 @@ def _extract_candidates(page: Any) -> list[dict[str, str]]:
         '.break-words'
       ];
 
+      const profileHref = (anchor) => {
+        try {
+          const url = new URL(anchor.href, window.location.origin);
+          return /^\/in\/[^/]+\/?$/.test(url.pathname);
+        } catch (_) {
+          return false;
+        }
+      };
+
+      const profileCard = (anchor, root) => {
+        let container = anchor;
+        let paragraphs = [];
+        let cursor = anchor;
+        for (let depth = 0; depth < 5 && cursor && cursor !== root; depth += 1) {
+          const lines = Array.from(cursor.querySelectorAll('p'))
+            .map((node) => clean(node.innerText))
+            .filter(Boolean);
+          if (lines.length >= 2) {
+            container = cursor;
+            paragraphs = lines;
+            break;
+          }
+          cursor = cursor.parentElement;
+        }
+        const labelName = clean(anchor.getAttribute('aria-label'))
+          .replace(/^view\s+/i, '')
+          .replace(/[’']s\s+profile.*$/i, '')
+          .replace(/\s+profile.*$/i, '');
+        const imageName = clean((anchor.querySelector('img') || {}).alt)
+          .replace(/^view\s+/i, '')
+          .replace(/[’']s\s+profile.*$/i, '')
+          .replace(/\s+profile.*$/i, '');
+        const anchorName = clean(anchor.innerText);
+        const hasProfileEvidence = paragraphs.length >= 2
+          || Boolean(anchor.querySelector('img, figure'))
+          || /profile/i.test(clean(anchor.getAttribute('aria-label')));
+        if (!hasProfileEvidence) return null;
+        const name = paragraphs.find((line) => (
+          line.length <= 120
+          && !/^(follow|connect|message)$/i.test(line)
+          && !/^(just now|moments ago|\d+\s*(?:m|h|d|w|mo|yr)s?)/i.test(line)
+        )) || labelName || imageName || anchorName;
+        if (!name || name.length > 160) return null;
+        return {
+          anchor,
+          container,
+          href: anchor.href,
+          name,
+          score: paragraphs.length + (anchor.querySelector('img, figure') ? 2 : 0) + (labelName ? 1 : 0)
+        };
+      };
+
+      const longestText = (entries) => entries
+        .map((entry) => entry.text)
+        .filter(Boolean)
+        .sort((a, b) => b.length - a.length)[0] || '';
+
       const candidates = [];
       roots.forEach((root) => {
-        const texts = [];
+        const textEntries = [];
+        const seenTextNodes = new Set();
         textSelectors.forEach((selector) => {
           root.querySelectorAll(selector).forEach((node) => {
-            const text = (node.innerText || '').trim();
-            if (text) texts.push(text);
+            if (seenTextNodes.has(node)) return;
+            seenTextNodes.add(node);
+            const text = clean(node.innerText);
+            if (text) textEntries.push({ node, text });
           });
         });
-        const rawText = texts.sort((a, b) => b.length - a.length)[0] || (root.innerText || '').trim();
+        const rootText = clean(root.innerText);
+
+        const profileCards = [];
+        Array.from(root.querySelectorAll('a[href*="/in/"]'))
+          .filter(profileHref)
+          .forEach((anchor) => {
+            const card = profileCard(anchor, root);
+            if (!card) return;
+            const duplicateIndex = profileCards.findIndex((existing) => (
+              existing.href === card.href
+              && (existing.container.contains(card.anchor) || card.container.contains(existing.anchor))
+            ));
+            if (duplicateIndex < 0) {
+              profileCards.push(card);
+            } else if (card.score > profileCards[duplicateIndex].score) {
+              profileCards[duplicateIndex] = card;
+            }
+          });
+        profileCards.sort((left, right) => {
+          if (left.anchor === right.anchor) return 0;
+          const position = left.anchor.compareDocumentPosition(right.anchor);
+          return position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+        });
+
+        let nestedPost = null;
+        if (profileCards.length >= 2) {
+          const outerAuthor = profileCards[0].anchor;
+          let cursor = profileCards[1].anchor;
+          while (cursor.parentElement && cursor.parentElement !== root && !cursor.parentElement.contains(outerAuthor)) {
+            cursor = cursor.parentElement;
+            nestedPost = cursor;
+          }
+        }
+
+        const nestedTextEntries = nestedPost
+          ? textEntries.filter((entry) => nestedPost.contains(entry.node))
+          : [];
+        const commentaryEntries = nestedPost
+          ? textEntries.filter((entry) => !nestedPost.contains(entry.node) && !entry.node.contains(nestedPost))
+          : [];
+        const originalPostText = longestText(nestedTextEntries);
+        const repostText = longestText(commentaryEntries);
+        const isRepost = Boolean(
+          (/\breposted this\b/i.test(rootText))
+          || (nestedPost && originalPostText)
+        );
+        const directText = longestText(textEntries) || rootText;
+        const rawText = isRepost && originalPostText ? originalPostText : directText;
         const links = Array.from(root.querySelectorAll('a[href*="/feed/update/"], a[href*="urn:li:activity"]'))
           .map((node) => node.href)
           .filter(Boolean);
@@ -247,15 +355,20 @@ def _extract_candidates(page: Any) -> list[dict[str, str]]:
             if (value && value.trim()) timeCandidates.push(value.trim());
           });
         });
-        const timePattern = /(just now|moments ago|seconds ago|a minute ago|an hour ago|yesterday|\\b\\d+\\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\\b)/i;
+        const timePattern = /(just now|moments ago|seconds ago|a minute ago|an hour ago|yesterday|\b\d+\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b)/i;
         const rootTimeMatch = (root.innerText || '').match(timePattern);
         const postedAtText = (timeCandidates.find((value) => timePattern.test(value)) || (rootTimeMatch && rootTimeMatch[0]) || timeCandidates[0] || '').trim();
         candidates.push({
           raw_text: rawText,
           post_url: links[0] || '',
           data_urn: dataUrn,
-          author_name: authorNode ? authorNode.innerText.trim() : '',
-          posted_at_text: postedAtText
+          author_name: profileCards[0] ? profileCards[0].name : (authorNode ? clean(authorNode.innerText) : ''),
+          posted_at_text: postedAtText,
+          is_repost: isRepost,
+          repost_text: isRepost ? repostText : '',
+          original_post_text: isRepost ? rawText : '',
+          original_author_name: isRepost && profileCards[1] ? profileCards[1].name : '',
+          original_author_url: isRepost && profileCards[1] ? profileCards[1].href : ''
         });
       });
       return candidates;
@@ -277,13 +390,20 @@ def _normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     activity_urn = _activity_urn(candidate.get("data_urn"), candidate.get("post_url"), raw_text)
-    content_hash = _content_hash(raw_text)
+    repost_text = _clean_text(str(candidate.get("repost_text", "")))
+    is_repost = bool(candidate.get("is_repost"))
+    content_hash = _content_hash("\n".join(part for part in (repost_text, raw_text) if part))
     return {
         "post_id": activity_urn or content_hash,
         "post_url": _post_url(str(candidate.get("post_url", "")), activity_urn),
         "raw_text": raw_text,
         "author_name": _clean_text(str(candidate.get("author_name", ""))),
         "posted_at_text": _clean_text(str(candidate.get("posted_at_text", ""))),
+        "is_repost": is_repost,
+        "repost_text": repost_text if is_repost else "",
+        "original_post_text": _clean_text(str(candidate.get("original_post_text", ""))) if is_repost else "",
+        "original_author_name": _clean_text(str(candidate.get("original_author_name", ""))) if is_repost else "",
+        "original_author_url": str(candidate.get("original_author_url", "")).strip() if is_repost else "",
         "fetched_at": _now(),
         "content_hash": content_hash,
         "source": "playwright",

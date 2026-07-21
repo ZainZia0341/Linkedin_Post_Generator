@@ -59,7 +59,7 @@ export function CommentGenerationView() {
     try {
       const [dataResult, activityResult, profileResult] = await Promise.allSettled([
         fetchUserData(DEFAULT_USER_ID),
-        fetchUserActivities(DEFAULT_USER_ID, 100),
+        fetchUserActivities(DEFAULT_USER_ID, 500),
         fetchCreatorProfiles(DEFAULT_USER_ID, 500),
       ]);
       if (dataResult.status === "rejected") throw dataResult.reason;

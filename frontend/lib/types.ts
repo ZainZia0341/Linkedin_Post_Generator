@@ -48,6 +48,11 @@ export type ActivityResponse = {
   raw_text: string;
   author_name?: string;
   posted_at_text?: string;
+  is_repost?: boolean;
+  repost_text?: string;
+  original_post_text?: string;
+  original_author_name?: string;
+  original_author_url?: string;
   fetched_at: string;
   content_hash?: string;
   source?: string;

@@ -31,13 +31,13 @@ const POSTS_PAGE_SIZE = 9;
 type TimeBucket = "last_12h" | "day_1" | "day_2" | "day_3";
 
 function hasCachedPostsData() {
-  return Boolean(getCachedUserData(DEFAULT_USER_ID) && getCachedUserActivities(DEFAULT_USER_ID, 100));
+  return Boolean(getCachedUserData(DEFAULT_USER_ID) && getCachedUserActivities(DEFAULT_USER_ID, 500));
 }
 
 export function PostsScrapingView() {
   const router = useRouter();
   const [userData, setUserData] = useState<UserDataResponse | null>(() => getCachedUserData(DEFAULT_USER_ID));
-  const [activities, setActivities] = useState<ActivityResponse[]>(() => getCachedUserActivities(DEFAULT_USER_ID, 100) ?? []);
+  const [activities, setActivities] = useState<ActivityResponse[]>(() => getCachedUserActivities(DEFAULT_USER_ID, 500) ?? []);
   const [profileMap, setProfileMap] = useState<Map<string, CreatorProfileDetailsResponse>>(() => {
     const cachedProfiles = getCachedCreatorProfiles(DEFAULT_USER_ID, 500);
     return new Map((cachedProfiles ?? []).map((profile) => [profile.creator_id, profile]));
@@ -64,7 +64,7 @@ export function PostsScrapingView() {
     try {
       const [dataResult, activityResult, profileResult] = await Promise.allSettled([
         fetchUserData(DEFAULT_USER_ID),
-        fetchUserActivities(DEFAULT_USER_ID, 100),
+        fetchUserActivities(DEFAULT_USER_ID, 500),
         fetchCreatorProfiles(DEFAULT_USER_ID, 500),
       ]);
       if (dataResult.status === "rejected") throw dataResult.reason;
@@ -100,7 +100,7 @@ export function PostsScrapingView() {
     return activities.filter((activity) => {
       const creator = creatorById.get(activity.creator_id);
       const profile = profileMap.get(activity.creator_id);
-      const searchable = `${activity.raw_text} ${activity.creator_id} ${activity.author_name || ""} ${creator?.display_name || ""} ${profile?.name || ""} ${profile?.headline || ""}`.toLowerCase();
+      const searchable = `${activity.raw_text} ${activity.repost_text || ""} ${activity.original_author_name || ""} ${activity.creator_id} ${activity.author_name || ""} ${creator?.display_name || ""} ${profile?.name || ""} ${profile?.headline || ""}`.toLowerCase();
       const matchesQuery = !normalized || searchable.includes(normalized);
       const matchesCreator = creatorFilter === "all" || activity.creator_id === creatorFilter;
       const matchesWindow = isWithinTimeBucket(activity.fetched_at, timeBucket);
@@ -299,9 +299,11 @@ function ScrapedPostCard({
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
   const isNew = isFetchedWithinLastDay(activity);
   const postUrl = directPostUrl(activity);
+  const repostText = activity.is_repost ? activity.repost_text?.trim() || "" : "";
+  const originalText = activity.original_post_text?.trim() || activity.raw_text;
 
   async function copyPostText() {
-    await navigator.clipboard.writeText(activity.raw_text);
+    await navigator.clipboard.writeText(copyablePostText(activity));
   }
 
   return (
@@ -338,7 +340,22 @@ function ScrapedPostCard({
         </div>
       </header>
       <div className="post-card-body">
-        "{previewText(activity.raw_text, 250)}"
+        {repostText ? (
+          <>
+            <div className="repost-card-section">
+              <span className="post-section-label">Repost comment</span>
+              <p>"{previewText(repostText, 110)}"</p>
+            </div>
+            <div className="repost-card-section original">
+              <span className="post-section-label">
+                Original post{activity.original_author_name ? ` by ${activity.original_author_name}` : ""}
+              </span>
+              <p>"{previewText(originalText, 150)}"</p>
+            </div>
+          </>
+        ) : (
+          <>"{previewText(activity.raw_text, 250)}"</>
+        )}
       </div>
       <div className="post-card-meta">
         <span>Fetched {compactDate(activity.fetched_at)}</span>
@@ -379,6 +396,8 @@ function ScrapedPostDetailsDrawer({
   const name = profile?.name || activity.author_name || creator?.display_name || activity.creator_id;
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
   const postUrl = directPostUrl(activity);
+  const repostText = activity.is_repost ? activity.repost_text?.trim() || "" : "";
+  const originalText = activity.original_post_text?.trim() || activity.raw_text;
 
   async function copyText(value: string) {
     await navigator.clipboard.writeText(value);
@@ -428,18 +447,30 @@ function ScrapedPostDetailsDrawer({
             </div>
           </article>
 
+          {repostText ? (
+            <article className="post-detail-card repost-comment-detail">
+              <div className="post-detail-card-title">
+                <strong>Repost Comment</strong>
+              </div>
+              <p>{repostText}</p>
+            </article>
+          ) : null}
+
           <article className="post-detail-card">
             <div className="post-detail-card-title">
-              <strong>Original Post</strong>
+              <strong>
+                {repostText ? "Original Post" : "Post"}
+                {repostText && activity.original_author_name ? ` by ${activity.original_author_name}` : ""}
+              </strong>
             </div>
-            <p>{activity.raw_text}</p>
+            <p>{originalText}</p>
           </article>
 
           <section className="quick-action-grid">
             <h3>Quick Actions</h3>
-            <button className="secondary-button compact" type="button" onClick={() => void copyText(activity.raw_text)}>
+            <button className="secondary-button compact" type="button" onClick={() => void copyText(copyablePostText(activity))}>
               <Copy size={15} />
-              Copy Raw Text
+              Copy Post Text
             </button>
             <button
               className="secondary-button compact"
@@ -494,6 +525,16 @@ function isFetchedWithinLastDay(activity: ActivityResponse) {
   const time = new Date(activity.fetched_at).getTime();
   if (Number.isNaN(time)) return false;
   return Date.now() - time <= 24 * 60 * 60 * 1000;
+}
+
+function copyablePostText(activity: ActivityResponse) {
+  const repostText = activity.is_repost ? activity.repost_text?.trim() || "" : "";
+  const originalText = activity.original_post_text?.trim() || activity.raw_text;
+  if (!repostText) return activity.raw_text;
+  const originalLabel = activity.original_author_name
+    ? `Original post by ${activity.original_author_name}`
+    : "Original post";
+  return `Repost comment\n${repostText}\n\n${originalLabel}\n${originalText}`;
 }
 
 function directPostUrl(activity: ActivityResponse) {

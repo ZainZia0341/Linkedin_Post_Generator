@@ -225,6 +225,11 @@ class ActivityResponse(BaseModel):
     raw_text: str
     author_name: str = ""
     posted_at_text: str = ""
+    is_repost: bool = False
+    repost_text: str = ""
+    original_post_text: str = ""
+    original_author_name: str = ""
+    original_author_url: str = ""
     fetched_at: str
     content_hash: str
     source: str = "playwright"
