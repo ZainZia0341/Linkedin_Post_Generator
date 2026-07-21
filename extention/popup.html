@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Spark Scraper</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main>
+      <div class="header">
+        <div>
+          <h1>AI Spark Scraper</h1>
+          <p>Uses this signed-in Chrome profile.</p>
+        </div>
+        <label class="switch">
+          <input id="enabled" type="checkbox">
+          Enabled
+        </label>
+      </div>
+
+      <section class="status-card">
+        <div class="row">
+          <span id="statusDot" class="status-dot"></span>
+          <span id="statusLabel" class="status-label">Checking backend...</span>
+        </div>
+        <div class="meta">
+          <div class="row"><span>Backend</span><strong id="backendUrl">-</strong></div>
+          <div class="row"><span>Last check</span><strong id="lastHeartbeat">Never</strong></div>
+          <div class="row"><span>Last task</span><strong id="lastTask">Never</strong></div>
+        </div>
+        <div id="lastError" class="error hidden"></div>
+      </section>
+
+      <div class="actions">
+        <button id="checkNow" class="primary" type="button">Check now</button>
+        <button id="openOptions" type="button">Settings</button>
+      </div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

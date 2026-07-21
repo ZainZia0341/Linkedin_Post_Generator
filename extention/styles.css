@@ -1,0 +1,178 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #182033;
+  background: #f7f8fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 330px;
+  background: #f7f8fc;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+p {
+  margin: 4px 0 0;
+  color: #627086;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.header,
+.row,
+.actions {
+  display: flex;
+  align-items: center;
+}
+
+.header,
+.row {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.status-card,
+.settings-card {
+  margin-top: 14px;
+  border: 1px solid #d9deea;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 50%;
+  background: #98a2b3;
+}
+
+.status-dot.connected {
+  background: #16885f;
+}
+
+.status-dot.error {
+  background: #d92d20;
+}
+
+.status-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.meta {
+  margin-top: 10px;
+  display: grid;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.meta span:first-child {
+  color: #667085;
+}
+
+.error {
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid #f3b8b3;
+  border-radius: 6px;
+  color: #b42318;
+  background: #fff1f0;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.hidden {
+  display: none;
+}
+
+.actions {
+  margin-top: 14px;
+  gap: 8px;
+}
+
+button,
+.button-link {
+  min-height: 36px;
+  border: 1px solid #cfd6e6;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fff;
+  color: #182033;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+}
+
+button.primary {
+  border-color: #4f46e5;
+  background: #4f46e5;
+  color: #fff;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.switch input {
+  width: 17px;
+  height: 17px;
+  accent-color: #4f46e5;
+}
+
+label.field {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+input[type="url"],
+input[type="password"] {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #cfd6e6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  color: #182033;
+  font: inherit;
+}
+
+.message {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #16885f;
+  font-size: 12px;
+}

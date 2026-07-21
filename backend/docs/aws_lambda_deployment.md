@@ -4,9 +4,11 @@ This backend is prepared for a container-image Lambda behind API Gateway HTTP
 API. The Lambda serves FastAPI through Mangum and uses DynamoDB tables created
 by `serverless.yml`.
 
-Playwright scraping is intentionally disabled in the deployed Lambda. Run
-scraping locally and point local backend env vars at the AWS DynamoDB tables so
-the deployed API can read the saved creator/activity data.
+Browser scraping is intentionally disabled in the deployed Lambda. Run the
+local FastAPI backend with the Chrome extension and point the local backend env
+vars at the AWS DynamoDB tables so the deployed API can read the saved
+creator/activity data. The legacy Playwright endpoints remain in the backend,
+but the normal async scrape jobs use the extension.
 
 ## AWS Setup
 
@@ -55,7 +57,7 @@ linkedin_post_generator_dev_activities
 
 ## Local Scraping Into AWS DynamoDB
 
-Use this when you want local Playwright scraping to populate the deployed
+Use this when you want local extension scraping to populate the deployed
 DynamoDB tables.
 
 ```powershell
@@ -67,15 +69,20 @@ $env:DYNAMODB_TABLE_PREFIX="linkedin_post_generator_dev"
 $env:SCRAPING_ENABLED="true"
 $env:SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS="0"
 $env:SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS="240"
+$env:EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS="300"
+$env:EXTENSION_SCRAPE_TASK_LEASE_SECONDS="120"
+$env:EXTENSION_API_TOKEN=""
 Remove-Item Env:\DYNAMODB_ENDPOINT_URL -ErrorAction SilentlyContinue
 uv run uvicorn app.api.main:app --reload --host 127.0.0.1 --port 7860
 ```
 
 Then run scraping from the local frontend or call the local scrape endpoints.
 The saved data lands in AWS DynamoDB and is readable by the deployed Lambda API.
-Each creator's Playwright launch waits for a newly randomized delay within the
-configured minimum and maximum. Change these shell values, or the matching
-values in `.env`, before starting the backend to use a different range.
+The extension must be loaded in the Chrome profile that is signed in to the
+burner LinkedIn account. Each creator task waits for a newly randomized delay
+within the configured minimum and maximum. Change these shell values, or the
+matching values in `.env`, before starting the backend to use a different
+range.
 
 ## Vercel Frontend Env
 
@@ -88,4 +95,6 @@ NEXT_PUBLIC_ENABLE_SCRAPING=false
 ```
 
 `NEXT_PUBLIC_ENABLE_SCRAPING=false` keeps the deployed frontend from trying to
-run Playwright-backed scrape actions through Lambda.
+run browser-backed scrape actions through Lambda. The extension task broker and
+the current scrape-job runner are process-local, so use the local frontend and
+local FastAPI process for scraping.

@@ -74,6 +74,7 @@ from app.config import (
 )
 from app.creator_tracking import get_profile_id, normalize_linkedin_profile_url
 from app.db.dynamodb import DynamoRepository
+from app.extension_scraping import request_extension_scrape
 from app.graph_state import run_post_chat_edit, run_post_generation
 from app.langchain_deep_search import research_trending_topics
 from app.linkedin_post_actions import reply_to_comment, send_connection_request, send_dm
@@ -190,7 +191,7 @@ def _sleep_before_playwright_launch(launch_delay_seconds: float | int | None) ->
         time.sleep(delay)
 
 
-def _sleep_before_creator_playwright_launch(launch_delay_seconds: float | int | None) -> None:
+def _sleep_before_creator_scrape(launch_delay_seconds: float | int | None) -> None:
     if SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS <= 0:
         _sleep_before_playwright_launch(launch_delay_seconds)
         return
@@ -199,16 +200,52 @@ def _sleep_before_creator_playwright_launch(launch_delay_seconds: float | int | 
         SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS,
     )
     if delay > 0:
-        print(f"Waiting {delay:.1f} seconds before this LinkedIn creator Playwright launch.")
+        print(f"Waiting {delay:.1f} seconds before this LinkedIn creator scrape.")
         time.sleep(delay)
 
 
-def _creator_scrape_worker_count(creator_count: int) -> int:
+def _creator_scrape_worker_count(creator_count: int, *, use_extension: bool = False) -> int:
+    if use_extension:
+        return 1
     if creator_count > 1 and SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS > 0:
         return 1
     if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner":
         return 1
     return max(1, SCRAPE_MAX_WORKERS)
+
+
+def _fetch_creator_posts(
+    user_id: str,
+    creator: dict[str, Any],
+    max_posts: int,
+    *,
+    use_extension: bool = False,
+) -> list[dict[str, Any]]:
+    if use_extension:
+        return request_extension_scrape(
+            scrape_type="posts",
+            user_id=user_id,
+            creator_id=str(creator["creator_id"]),
+            profile_url=str(creator["profile_url"]),
+            max_posts=max_posts,
+        )
+    return fetch_recent_profile_posts(str(creator["profile_url"]), max_posts=max_posts)
+
+
+def _fetch_creator_profile(
+    user_id: str,
+    creator: dict[str, Any],
+    *,
+    use_extension: bool = False,
+) -> dict[str, Any]:
+    if use_extension:
+        return request_extension_scrape(
+            scrape_type="profile",
+            user_id=user_id,
+            creator_id=str(creator["creator_id"]),
+            profile_url=str(creator["profile_url"]),
+        )
+    return fetch_profile_details(str(creator["profile_url"]))
 
 
 def provider_model(provider: str | None, model: str | None) -> tuple[str, str]:
@@ -766,6 +803,8 @@ def scrape_creator_profile_details(
     repo: DynamoRepository,
     request: ScrapeCreatorProfilesRequest,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    use_extension: bool = False,
 ) -> ScrapeCreatorProfilesResponse:
     require_user(repo, request.user_id)
     creators = repo.list_creators(request.user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
@@ -777,10 +816,10 @@ def scrape_creator_profile_details(
     profiles: list[CreatorProfileDetailsResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        _sleep_before_creator_playwright_launch(request.launch_delay_seconds)
-        return creator, fetch_profile_details(creator["profile_url"])
+        _sleep_before_creator_scrape(request.launch_delay_seconds)
+        return creator, _fetch_creator_profile(request.user_id, creator, use_extension=use_extension)
 
-    max_workers = _creator_scrape_worker_count(len(creators))
+    max_workers = _creator_scrape_worker_count(len(creators), use_extension=use_extension)
     if max_workers == 1 and len(creators) > 1:
         print("Running creator profile scrapes sequentially with the configured inter-creator delay.")
 
@@ -814,7 +853,7 @@ def scrape_creator_profile_details(
                         "profile_image_url": "",
                         "experience": [],
                         "fetched_at": timestamp,
-                        "source": "playwright",
+                        "source": "extension" if use_extension else "playwright",
                     }
                 errors.append(
                     {
@@ -1226,8 +1265,8 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
     new_activities: list[ActivityResponse] = []
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        _sleep_before_creator_playwright_launch(request.launch_delay_seconds)
-        posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
+        _sleep_before_creator_scrape(request.launch_delay_seconds)
+        posts = _fetch_creator_posts(request.user_id, creator, request.max_posts)
         return creator, posts
 
     max_workers = _creator_scrape_worker_count(len(creators))
@@ -1293,6 +1332,8 @@ def scrape_creators_recent_24h(
     repo: DynamoRepository,
     request: RecentScrapeCreatorsRequest,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    use_extension: bool = False,
 ) -> RecentScrapeCreatorsResponse:
     require_user(repo, request.user_id)
     creators = repo.list_creators(request.user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
@@ -1308,11 +1349,16 @@ def scrape_creators_recent_24h(
     newly_saved_count = 0
 
     def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        _sleep_before_creator_playwright_launch(request.launch_delay_seconds)
-        posts = fetch_recent_profile_posts(creator["profile_url"], max_posts=request.max_posts)
+        _sleep_before_creator_scrape(request.launch_delay_seconds)
+        posts = _fetch_creator_posts(
+            request.user_id,
+            creator,
+            request.max_posts,
+            use_extension=use_extension,
+        )
         return creator, posts
 
-    max_workers = _creator_scrape_worker_count(len(creators))
+    max_workers = _creator_scrape_worker_count(len(creators), use_extension=use_extension)
     if max_workers == 1 and len(creators) > 1:
         print("Running creator post scrapes sequentially with the configured inter-creator delay.")
 
@@ -1524,6 +1570,7 @@ def start_recent_scrape_job(
                 repo,
                 request,
                 progress_callback=_scrape_job_progress(job_id, "creator_posts"),
+                use_extension=True,
             )
             _update_scrape_job(
                 job_id,
@@ -1563,6 +1610,7 @@ def start_profile_scrape_job(
                 repo,
                 request,
                 progress_callback=_scrape_job_progress(job_id, "creator_profiles"),
+                use_extension=True,
             )
             _update_scrape_job(
                 job_id,

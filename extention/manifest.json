@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "AI Spark LinkedIn Scraper",
+  "description": "Runs AI Spark creator post and profile scraping in the signed-in Chrome session.",
+  "version": "0.1.2",
+  "permissions": [
+    "alarms",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "http://localhost:7860/*",
+    "http://127.0.0.1:7860/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AI Spark LinkedIn Scraper"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -585,6 +585,31 @@ class ScrapeJobStatusResponse(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExtensionHeartbeatRequest(BaseModel):
+    extension_id: str
+    version: str = ""
+
+
+class ExtensionTaskResultRequest(BaseModel):
+    extension_id: str
+    status: str
+    data: Any = None
+    error: str = ""
+
+
+class ExtensionTaskPollResponse(BaseModel):
+    task: dict[str, Any] | None = None
+
+
+class ExtensionStatusResponse(BaseModel):
+    connected: bool = False
+    extension_id: str = ""
+    version: str = ""
+    last_seen_at: str = ""
+    queued_tasks: int = 0
+    active_tasks: int = 0
+
+
 class DashboardStatsResponse(BaseModel):
     creator_count: int = 0
     thread_count: int = 0

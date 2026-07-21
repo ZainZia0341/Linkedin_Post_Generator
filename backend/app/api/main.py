@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.schemas import (
@@ -32,6 +32,10 @@ from app.api.schemas import (
     CreatorResponse,
     DeleteResponse,
     DmActionRequest,
+    ExtensionHeartbeatRequest,
+    ExtensionStatusResponse,
+    ExtensionTaskPollResponse,
+    ExtensionTaskResultRequest,
     GenerateCommentRequest,
     GenerateFromActivityRequest,
     GeneratePostRequest,
@@ -127,8 +131,14 @@ from app.content_workflows import (
     update_carousel,
     update_content_item,
 )
-from app.config import API_LIST_LIMIT, PROVIDER_MODELS, SCRAPING_ENABLED
+from app.config import API_LIST_LIMIT, EXTENSION_API_TOKEN, PROVIDER_MODELS, SCRAPING_ENABLED
 from app.db.dynamodb import DynamoRepository, DynamoUnavailable, get_repository
+from app.extension_scraping import (
+    claim_extension_task,
+    complete_extension_task,
+    extension_status,
+    heartbeat_extension,
+)
 from app.llms.llm import LLMConfig, test_provider_api_key
 
 app = FastAPI(
@@ -163,15 +173,72 @@ def _require_scraping_enabled() -> None:
     raise HTTPException(
         status_code=501,
         detail=(
-            "Scraping is disabled in this deployment. Run the Playwright scraping workflow locally "
+            "Scraping is disabled in this deployment. Run the Chrome extension scraping workflow locally "
             "and save results to the configured DynamoDB tables."
         ),
     )
 
 
+def _require_extension_token(token: str) -> None:
+    if not EXTENSION_API_TOKEN or token == EXTENSION_API_TOKEN:
+        return
+    raise HTTPException(status_code=401, detail="Invalid Chrome extension API token.")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/extension/heartbeat", response_model=ExtensionStatusResponse)
+def extension_heartbeat_endpoint(
+    payload: ExtensionHeartbeatRequest,
+    x_extension_token: Annotated[str, Header()] = "",
+) -> ExtensionStatusResponse:
+    _require_extension_token(x_extension_token)
+    heartbeat_extension(payload.extension_id, payload.version)
+    return ExtensionStatusResponse.model_validate(extension_status())
+
+
+@app.get("/extension/tasks/next", response_model=ExtensionTaskPollResponse)
+def claim_extension_task_endpoint(
+    extension_id: str,
+    version: str = "",
+    x_extension_token: Annotated[str, Header()] = "",
+) -> ExtensionTaskPollResponse:
+    _require_extension_token(x_extension_token)
+    task = claim_extension_task(extension_id, version)
+    return ExtensionTaskPollResponse(task=task)
+
+
+@app.post("/extension/tasks/{task_id}/result", response_model=ExtensionStatusResponse)
+def complete_extension_task_endpoint(
+    task_id: str,
+    payload: ExtensionTaskResultRequest,
+    x_extension_token: Annotated[str, Header()] = "",
+) -> ExtensionStatusResponse:
+    _require_extension_token(x_extension_token)
+    try:
+        complete_extension_task(
+            task_id,
+            payload.extension_id,
+            payload.status,
+            payload.data,
+            payload.error,
+        )
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ExtensionStatusResponse.model_validate(extension_status())
+
+
+@app.get("/extension/status", response_model=ExtensionStatusResponse)
+def extension_status_endpoint(
+    x_extension_token: Annotated[str, Header()] = "",
+) -> ExtensionStatusResponse:
+    _require_extension_token(x_extension_token)
+    return ExtensionStatusResponse.model_validate(extension_status())
 
 
 @app.get("/actions", response_model=list[str])
