@@ -179,6 +179,25 @@ class BrainstormResponse(BaseModel):
     model: str = ""
 
 
+class BrainstormJobStartResponse(BaseModel):
+    job_id: str
+    user_id: str
+    status: str
+    created_at: str
+
+
+class BrainstormJobStatusResponse(BaseModel):
+    job_id: str
+    user_id: str
+    status: str
+    created_at: str
+    started_at: str = ""
+    completed_at: str = ""
+    elapsed_seconds: float | None = None
+    error: str = ""
+    result: BrainstormResponse | None = None
+
+
 class CreatorCreateRequest(BaseModel):
     user_id: str
     profile_url: str
@@ -587,11 +606,13 @@ class ScrapeJobStatusResponse(BaseModel):
 
 class ExtensionHeartbeatRequest(BaseModel):
     extension_id: str
+    user_id: str = "test-user-1"
     version: str = ""
 
 
 class ExtensionTaskResultRequest(BaseModel):
     extension_id: str
+    user_id: str = "test-user-1"
     status: str
     data: Any = None
     error: str = ""

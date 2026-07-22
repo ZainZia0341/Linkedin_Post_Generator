@@ -1,0 +1,39 @@
+ID,Category,HTTP Method,Path,Query/Body Parameters,DynamoDB Operation,PK,SK or Key Condition,GSI/Notes
+A01,Users,POST,/users,user_id name email,PutItem,USER#{user_id},PROFILE,None
+A02,Users,GET,/users/{user_id},user_id,GetItem,USER#{user_id},PROFILE,None
+A03,Users,GET,/users/{user_id}/data,user_id,Query + GetItem,USER#{user_id},PROFILE plus entity prefixes,None
+A04,Users,GET,/users,limit,Scan,-,entity_type = user,No GSI; low-volume admin operation
+A05,Threads,GET,/users/{user_id}/threads,limit,Query,USER#{user_id},begins_with(SK THREAD#),None
+A06,Threads,GET,/users/{user_id}/threads/{thread_id},user_id thread_id,GetItem,USER#{user_id},THREAD#{thread_id},None
+A07,Threads,DELETE,/users/{user_id}/threads/{thread_id},user_id thread_id,DeleteItem,USER#{user_id},THREAD#{thread_id},None
+A08,Generation,POST,/posts/generate,user_id plus generation options,PutItem,USER#{user_id},THREAD#{thread_id},Stores generated thread
+A09,Generation,POST,/posts/modify,user_id thread_id modification_message,GetItem + PutItem,USER#{user_id},THREAD#{thread_id},None
+A10,Comments,POST,/comments/generate,user_id creator_id post_id options,GetItem + PutItem,USER#{user_id},ACTIVITY#{creator_id}#{post_id},Thread is stored as THREAD#{thread_id}
+A11,Creators,POST,/creators,user_id plus creator payload,PutItem,USER#{user_id},CREATOR#{creator_id},None
+A12,Creators,GET,/users/{user_id}/creators,limit,Query,USER#{user_id},begins_with(SK CREATOR#),None
+A13,Creator profiles,GET,/users/{user_id}/creators/profile-details,user_id limit,Query,USER#{user_id},begins_with(SK CREATOR#),Profile fields are embedded in creator items
+A14,Creators,DELETE,/users/{user_id}/creators/{creator_id},user_id creator_id,DeleteItem + Query,USER#{user_id},CREATOR#{creator_id} and ACTIVITY#{creator_id}#,Deletes owned activities
+A15,Creator profiles,GET,/users/{user_id}/creators/{creator_id}/profile-details,user_id creator_id,GetItem,USER#{user_id},CREATOR#{creator_id},Profile fields are embedded in creator item
+A16,Activities,GET,/users/{user_id}/activities,limit,Query per creator,USER#{user_id},begins_with(SK ACTIVITY#{creator_id}#),No GSI; creator list bounds fan-out
+A17,Activities,GET,/users/{user_id}/creators/{creator_id}/activities,limit,Query,USER#{user_id},begins_with(SK ACTIVITY#{creator_id}#),None
+A18,Scraping,POST,/scrape-jobs/creators/recent-24h,user_id creator_ids window_hours max_posts,PutItem,USER#{user_id},JOB#{job_id},Job status record
+A19,Scraping,POST,/scrape-jobs/creators/profile-details,user_id creator_ids,PutItem,USER#{user_id},JOB#{job_id},Job status record
+A20,Scraping,GET,/scrape-jobs/{job_id},user_id job_id,GetItem,USER#{user_id},JOB#{job_id},No GSI
+A21,Brainstorm,POST,/ideas/brainstorm,user_id topic action,PutItem,USER#{user_id},JOB#{job_id},Returns 202 immediately
+A22,Brainstorm,GET,/ideas/brainstorm/jobs/{job_id},user_id,GetItem,USER#{user_id},JOB#{job_id},Returns elapsed_seconds and result
+A23,Content pipeline,POST,/content-items,user_id title content status,PutItem,USER#{user_id},THREAD#{content_id},Content items share the existing thread entity
+A24,Content pipeline,GET,/users/{user_id}/content-items,limit status,Query,USER#{user_id},begins_with(SK THREAD#),Status filtering stays inside the bounded user partition
+A25,Content pipeline,PATCH,/content-items/{content_id},user_id status content fields,GetItem + PutItem,USER#{user_id},THREAD#{content_id},None
+A26,Carousels,POST,/carousels,user_id carousel payload,PutItem,USER#{user_id},THREAD#{carousel_id},Carousel records share the thread entity
+A27,Carousels,GET,/users/{user_id}/carousels,limit,Query,USER#{user_id},begins_with(SK THREAD#),Type filtering stays inside the bounded user partition
+A28,Carousels,PATCH,/carousels/{carousel_id},user_id carousel fields,GetItem + PutItem,USER#{user_id},THREAD#{carousel_id},None
+A29,Images,POST,/images/generate,user_id prompt style,PutItem,USER#{user_id},THREAD#{asset_id},Image metadata shares the thread entity
+A30,Images,GET,/users/{user_id}/image-assets,limit,Query,USER#{user_id},begins_with(SK THREAD#),Type filtering stays inside the bounded user partition
+A31,Images,DELETE,/users/{user_id}/image-assets/{asset_id},user_id asset_id,DeleteItem,USER#{user_id},THREAD#{asset_id},None
+A32,LinkedIn posts,GET,/users/{user_id}/linkedin/posts,source window_hours limit,Query per owned-post creator,USER#{user_id},begins_with(SK ACTIVITY#linkedin-own-posts#),No GSI
+A33,Engagers,GET,/linkedin/posts/{post_id}/engagers,user_id engagement_type limit,GetItem,USER#{user_id},ACTIVITY#linkedin-own-posts#{post_id},Engagers embedded in activity
+A34,Action logs,GET,/users/{user_id}/linkedin/action-logs,post_id action_type limit,Query,USER#{user_id},begins_with(SK ACTIVITY#linkedin-action-log#),Filtered within bounded user partition
+A35,Extension,POST,/extension/heartbeat,user_id extension_id version,PutItem,EXTENSION#{user_id},CLIENT#{extension_id},No GSI; heartbeat isolated per application user
+A36,Extension,GET,/extension/tasks/next,user_id extension_id version,Query + PutItem,EXTENSION#{user_id},begins_with(SK TASK#),Claims the oldest queued or expired task
+A37,Extension,POST,/extension/tasks/{task_id}/result,user_id extension_id status data error,GetItem + PutItem,EXTENSION#{user_id},TASK#{task_id},Stores transient result for the scrape worker
+A38,Extension,GET,/extension/status,user_id,Query,EXTENSION#{user_id},CLIENT# and TASK# prefixes,No GSI

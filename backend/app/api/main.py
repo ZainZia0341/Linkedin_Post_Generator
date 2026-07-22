@@ -12,6 +12,8 @@ from app.api.schemas import (
     ApiKeyTestResponse,
     BrainstormRequest,
     BrainstormResponse,
+    BrainstormJobStartResponse,
+    BrainstormJobStatusResponse,
     BulkCreatorImportResponse,
     BulkCreatorPreviewResponse,
     CommentReplyActionRequest,
@@ -139,6 +141,7 @@ from app.extension_scraping import (
     extension_status,
     heartbeat_extension,
 )
+from app.brainstorm_jobs import get_brainstorm_job, start_brainstorm_job
 from app.llms.llm import LLMConfig, test_provider_api_key
 
 app = FastAPI(
@@ -196,18 +199,19 @@ def extension_heartbeat_endpoint(
     x_extension_token: Annotated[str, Header()] = "",
 ) -> ExtensionStatusResponse:
     _require_extension_token(x_extension_token)
-    heartbeat_extension(payload.extension_id, payload.version)
-    return ExtensionStatusResponse.model_validate(extension_status())
+    heartbeat_extension(payload.user_id, payload.extension_id, payload.version)
+    return ExtensionStatusResponse.model_validate(extension_status(payload.user_id))
 
 
 @app.get("/extension/tasks/next", response_model=ExtensionTaskPollResponse)
 def claim_extension_task_endpoint(
     extension_id: str,
+    user_id: str = "test-user-1",
     version: str = "",
     x_extension_token: Annotated[str, Header()] = "",
 ) -> ExtensionTaskPollResponse:
     _require_extension_token(x_extension_token)
-    task = claim_extension_task(extension_id, version)
+    task = claim_extension_task(user_id, extension_id, version)
     return ExtensionTaskPollResponse(task=task)
 
 
@@ -221,6 +225,7 @@ def complete_extension_task_endpoint(
     try:
         complete_extension_task(
             task_id,
+            payload.user_id,
             payload.extension_id,
             payload.status,
             payload.data,
@@ -230,15 +235,16 @@ def complete_extension_task_endpoint(
         raise _not_found(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return ExtensionStatusResponse.model_validate(extension_status())
+    return ExtensionStatusResponse.model_validate(extension_status(payload.user_id))
 
 
 @app.get("/extension/status", response_model=ExtensionStatusResponse)
 def extension_status_endpoint(
+    user_id: str = "test-user-1",
     x_extension_token: Annotated[str, Header()] = "",
 ) -> ExtensionStatusResponse:
     _require_extension_token(x_extension_token)
-    return ExtensionStatusResponse.model_validate(extension_status())
+    return ExtensionStatusResponse.model_validate(extension_status(user_id))
 
 
 @app.get("/actions", response_model=list[str])
@@ -424,13 +430,25 @@ def mark_comment_endpoint(
         raise _not_found(exc) from exc
 
 
-@app.post("/ideas/brainstorm", response_model=BrainstormResponse)
+@app.post("/ideas/brainstorm", response_model=BrainstormJobStartResponse, status_code=202)
 def brainstorm_endpoint(
     payload: BrainstormRequest,
     repo: Annotated[DynamoRepository, Depends(repo_dependency)],
-) -> BrainstormResponse:
+) -> BrainstormJobStartResponse:
     try:
-        return brainstorm(repo, payload)
+        return start_brainstorm_job(repo, payload)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+
+
+@app.get("/ideas/brainstorm/jobs/{job_id}", response_model=BrainstormJobStatusResponse)
+def brainstorm_job_endpoint(
+    job_id: str,
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> BrainstormJobStatusResponse:
+    try:
+        return get_brainstorm_job(repo, user_id, job_id)
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -914,9 +932,13 @@ def start_recent_creators_scrape_job_endpoint(
 
 
 @app.get("/scrape-jobs/{job_id}", response_model=ScrapeJobStatusResponse)
-def get_scrape_job_endpoint(job_id: str) -> ScrapeJobStatusResponse:
+def get_scrape_job_endpoint(
+    job_id: str,
+    user_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> ScrapeJobStatusResponse:
     try:
-        return get_scrape_job(job_id)
+        return get_scrape_job(repo, user_id, job_id)
     except KeyError as exc:
         raise _not_found(exc) from exc
 

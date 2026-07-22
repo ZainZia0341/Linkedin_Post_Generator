@@ -10,6 +10,7 @@
   ],
   "host_permissions": [
     "https://www.linkedin.com/*",
+    "https://*/*",
     "http://localhost:7860/*",
     "http://127.0.0.1:7860/*"
   ],

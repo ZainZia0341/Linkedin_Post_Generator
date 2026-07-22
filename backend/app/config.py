@@ -65,6 +65,7 @@ MAX_REVIEW_ATTEMPTS: Final[int] = int(os.getenv("MAX_REVIEW_ATTEMPTS", "3"))
 TAVILY_SEARCH_RESULTS: Final[int] = int(os.getenv("TAVILY_SEARCH_RESULTS", "5"))
 API_LIST_LIMIT: Final[int] = int(_env_value("API_LIST_LIMIT", "10"))
 SCRAPE_MAX_WORKERS: Final[int] = int(_env_value("SCRAPE_MAX_WORKERS", "2"))
+SCRAPE_ENGINE: Final[str] = _env_value("SCRAPE_ENGINE", "extension").lower()
 SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS: Final[float] = max(
     0.0,
     float(_env_value("SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS", "0")),
@@ -72,6 +73,16 @@ SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS: Final[float] = max(
 SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS: Final[float] = max(
     SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
     float(_env_value("SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS", "240")),
+)
+SCRAPE_LONG_BREAK_EVERY_CREATORS: Final[int] = max(
+    0, int(_env_value("SCRAPE_LONG_BREAK_EVERY_CREATORS", "10"))
+)
+SCRAPE_LONG_BREAK_MIN_SECONDS: Final[float] = max(
+    0.0, float(_env_value("SCRAPE_LONG_BREAK_MIN_SECONDS", "300"))
+)
+SCRAPE_LONG_BREAK_MAX_SECONDS: Final[float] = max(
+    SCRAPE_LONG_BREAK_MIN_SECONDS,
+    float(_env_value("SCRAPE_LONG_BREAK_MAX_SECONDS", "600")),
 )
 EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS: Final[float] = max(
     30.0,

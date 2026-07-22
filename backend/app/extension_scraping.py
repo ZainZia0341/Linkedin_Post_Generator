@@ -4,7 +4,6 @@ import hashlib
 import re
 import time
 from datetime import UTC, datetime
-from threading import Condition, RLock
 from typing import Any
 from uuid import uuid4
 
@@ -12,14 +11,9 @@ from app.config import (
     EXTENSION_SCRAPE_TASK_LEASE_SECONDS,
     EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS,
 )
+from app.db.dynamodb import get_repository
 
 _ACTIVITY_RE = re.compile(r"urn:li:activity:\d+")
-_LOCK = RLock()
-_CONDITION = Condition(_LOCK)
-_TASKS: dict[str, dict[str, Any]] = {}
-_EXTENSIONS: dict[str, dict[str, Any]] = {}
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -84,71 +78,60 @@ def _normalize_extension_posts(data: Any, max_posts: int) -> list[dict[str, Any]
     return posts
 
 
-def heartbeat_extension(extension_id: str, version: str = "") -> None:
-    with _CONDITION:
-        _EXTENSIONS[extension_id] = {
+def heartbeat_extension(user_id: str, extension_id: str, version: str = "") -> None:
+    get_repository().put_extension_client(user_id, {
+        "user_id": user_id,
+        "extension_id": extension_id,
+        "version": version,
+        "last_seen_at": _now(),
+        "last_seen_epoch": time.time(),
+    })
+
+
+def claim_extension_task(user_id: str, extension_id: str, version: str = "") -> dict[str, Any] | None:
+    heartbeat_extension(user_id, extension_id, version)
+    repo = get_repository()
+    now = time.time()
+    for task in repo.list_extension_tasks(user_id):
+        status = str(task.get("status", ""))
+        if status == "claimed" and float(task.get("lease_expires_epoch") or 0) <= now:
+            status = "queued"
+        if status != "queued":
+            continue
+        task.update({
+            "status": "claimed",
             "extension_id": extension_id,
-            "version": version,
-            "last_seen_at": _now(),
-            "last_seen_monotonic": time.monotonic(),
-        }
-        _CONDITION.notify_all()
-
-
-def _release_expired_tasks(now: float) -> None:
-    for task in _TASKS.values():
-        if task.get("status") != "claimed":
-            continue
-        if float(task.get("lease_expires_at") or 0) > now:
-            continue
-        task["status"] = "queued"
-        task["extension_id"] = ""
-        task["lease_expires_at"] = 0.0
-
-
-def claim_extension_task(extension_id: str, version: str = "") -> dict[str, Any] | None:
-    heartbeat_extension(extension_id, version)
-    with _CONDITION:
-        now = time.monotonic()
-        _release_expired_tasks(now)
-        queued = sorted(
-            (task for task in _TASKS.values() if task.get("status") == "queued"),
-            key=lambda task: float(task.get("created_monotonic") or 0),
-        )
-        if not queued:
-            return None
-        task = queued[0]
-        task["status"] = "claimed"
-        task["extension_id"] = extension_id
-        task["claimed_at"] = _now()
-        task["lease_expires_at"] = now + EXTENSION_SCRAPE_TASK_LEASE_SECONDS
-        return {
-            key: value
-            for key, value in task.items()
-            if key not in {"created_monotonic", "lease_expires_at", "result", "error"}
-        }
+            "claimed_at": _now(),
+            "lease_expires_epoch": now + EXTENSION_SCRAPE_TASK_LEASE_SECONDS,
+        })
+        repo.put_extension_task(user_id, task)
+        return {key: value for key, value in task.items() if key not in {"result", "error"}}
+    return None
 
 
 def complete_extension_task(
     task_id: str,
+    user_id: str,
     extension_id: str,
     status: str,
     data: Any = None,
     error: str = "",
 ) -> None:
-    with _CONDITION:
-        task = _TASKS.get(task_id)
-        if not task:
-            raise KeyError(f"Extension scrape task not found: {task_id}")
-        claimed_by = str(task.get("extension_id", ""))
-        if claimed_by and claimed_by != extension_id:
-            raise ValueError("This extension scrape task is claimed by another extension.")
-        task["status"] = "succeeded" if status == "succeeded" else "failed"
-        task["result"] = data
-        task["error"] = error
-        task["completed_at"] = _now()
-        heartbeat_extension(extension_id)
-        _CONDITION.notify_all()
+    repo = get_repository()
+    task = repo.get_extension_task(user_id, task_id)
+    if not task:
+        raise KeyError(f"Extension scrape task not found: {task_id}")
+    claimed_by = str(task.get("extension_id", ""))
+    if claimed_by and claimed_by != extension_id:
+        raise ValueError("This extension scrape task is claimed by another extension.")
+    task.update({
+        "status": "succeeded" if status == "succeeded" else "failed",
+        "result": data,
+        "error": error,
+        "completed_at": _now(),
+    })
+    repo.put_extension_task(user_id, task)
+    heartbeat_extension(user_id, extension_id)
 
 
 def request_extension_scrape(
@@ -161,7 +144,7 @@ def request_extension_scrape(
 ) -> Any:
     if scrape_type not in {"posts", "profile"}:
         raise ValueError(f"Unsupported extension scrape type: {scrape_type}")
-    task_id = f"EXT-{scrape_type}-{uuid4()}"
+    task_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%f')}-{scrape_type}-{uuid4()}"
     task = {
         "task_id": task_id,
         "scrape_type": scrape_type,
@@ -172,29 +155,29 @@ def request_extension_scrape(
         "status": "queued",
         "extension_id": "",
         "created_at": _now(),
-        "created_monotonic": time.monotonic(),
-        "lease_expires_at": 0.0,
+        "lease_expires_epoch": 0.0,
         "result": None,
         "error": "",
     }
+    repo = get_repository()
+    repo.put_extension_task(user_id, task)
     deadline = time.monotonic() + EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS
-    with _CONDITION:
-        _TASKS[task_id] = task
-        _CONDITION.notify_all()
-        while task.get("status") not in {"succeeded", "failed"}:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                task["status"] = "failed"
-                task["error"] = (
-                    "Chrome extension did not complete the scrape task before the timeout. "
-                    "Confirm the extension is enabled and connected to this backend."
-                )
-                break
-            _CONDITION.wait(timeout=min(remaining, 5.0))
-        status = str(task.get("status", "failed"))
-        data = task.get("result")
-        error = str(task.get("error", ""))
-        _TASKS.pop(task_id, None)
+    while time.monotonic() < deadline:
+        current = repo.get_extension_task(user_id, task_id) or task
+        if current.get("status") in {"succeeded", "failed"}:
+            task = current
+            break
+        time.sleep(2)
+    else:
+        task.update({
+            "status": "failed",
+            "error": "Chrome extension did not complete the scrape task before the timeout. Confirm it is enabled and connected.",
+        })
+        repo.put_extension_task(user_id, task)
+    status = str(task.get("status", "failed"))
+    data = task.get("result")
+    error = str(task.get("error", ""))
+    repo.delete_extension_task(user_id, task_id)
 
     if status != "succeeded":
         raise RuntimeError(error or "Chrome extension scrape failed.")
@@ -208,20 +191,16 @@ def request_extension_scrape(
     return normalized
 
 
-def extension_status() -> dict[str, Any]:
-    with _CONDITION:
-        now = time.monotonic()
-        latest = max(
-            _EXTENSIONS.values(),
-            key=lambda item: float(item.get("last_seen_monotonic") or 0),
-            default={},
-        )
-        last_seen = float(latest.get("last_seen_monotonic") or 0)
-        return {
-            "connected": bool(last_seen and now - last_seen <= 45),
-            "extension_id": str(latest.get("extension_id", "")),
-            "version": str(latest.get("version", "")),
-            "last_seen_at": str(latest.get("last_seen_at", "")),
-            "queued_tasks": sum(1 for task in _TASKS.values() if task.get("status") == "queued"),
-            "active_tasks": sum(1 for task in _TASKS.values() if task.get("status") == "claimed"),
-        }
+def extension_status(user_id: str) -> dict[str, Any]:
+    repo = get_repository()
+    latest = max(repo.list_extension_clients(user_id), key=lambda item: float(item.get("last_seen_epoch") or 0), default={})
+    tasks = repo.list_extension_tasks(user_id)
+    last_seen = float(latest.get("last_seen_epoch") or 0)
+    return {
+        "connected": bool(last_seen and time.time() - last_seen <= 45),
+        "extension_id": str(latest.get("extension_id", "")),
+        "version": str(latest.get("version", "")),
+        "last_seen_at": str(latest.get("last_seen_at", "")),
+        "queued_tasks": sum(1 for task in tasks if task.get("status") == "queued"),
+        "active_tasks": sum(1 for task in tasks if task.get("status") == "claimed"),
+    }

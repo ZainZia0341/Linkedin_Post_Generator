@@ -21,13 +21,19 @@ provider:
     API_LIST_LIMIT: ${env:API_LIST_LIMIT, '10'}
     DYNAMODB_TABLE_PREFIX: ${self:custom.tablePrefix}
     DYNAMODB_AUTO_CREATE_TABLES: 'false'
+    SCRAPE_ENGINE: ${env:SCRAPE_ENGINE, 'extension'}
     SCRAPING_ENABLED: ${param:scrapingEnabled, 'false'}
     SCRAPE_MAX_WORKERS: ${env:SCRAPE_MAX_WORKERS, '2'}
     SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS: ${env:SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS, '0'}
     SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS: ${env:SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS, '240'}
+    SCRAPE_LONG_BREAK_EVERY_CREATORS: ${env:SCRAPE_LONG_BREAK_EVERY_CREATORS, '10'}
+    SCRAPE_LONG_BREAK_MIN_SECONDS: ${env:SCRAPE_LONG_BREAK_MIN_SECONDS, '300'}
+    SCRAPE_LONG_BREAK_MAX_SECONDS: ${env:SCRAPE_LONG_BREAK_MAX_SECONDS, '600'}
     EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS: ${env:EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS, '300'}
     EXTENSION_SCRAPE_TASK_LEASE_SECONDS: ${env:EXTENSION_SCRAPE_TASK_LEASE_SECONDS, '120'}
     EXTENSION_API_TOKEN: ${env:EXTENSION_API_TOKEN, ''}
+    BRAINSTORM_WORKER_FUNCTION_NAME: ${self:service}-${sls:stage}-brainstormWorker
+    SCRAPE_WORKER_FUNCTION_NAME: ${self:service}-${sls:stage}-scrapeWorker
     DEFAULT_LLM_PROVIDER: ${env:DEFAULT_LLM_PROVIDER, 'gemini'}
     DEFAULT_LLM_MODEL: ${env:DEFAULT_LLM_MODEL, 'gemini-3.1-flash-lite'}
     GROQ_API_KEY: ${env:GROQ_API_KEY, ''}
@@ -49,17 +55,14 @@ provider:
             - dynamodb:Scan
           Resource:
             - Fn::GetAtt:
-                - UsersTable
+                - AppTable
                 - Arn
-            - Fn::GetAtt:
-                - ThreadsTable
-                - Arn
-            - Fn::GetAtt:
-                - CreatorsTable
-                - Arn
-            - Fn::GetAtt:
-                - ActivitiesTable
-                - Arn
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource:
+            - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${sls:stage}-brainstormWorker
+            - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${sls:stage}-scrapeWorker
 
 custom:
   tablePrefix: linkedin_post_generator_${sls:stage}
@@ -75,73 +78,35 @@ functions:
       - httpApi:
           method: '*'
           path: /{proxy+}
+  brainstormWorker:
+    timeout: 900
+    image:
+      name: api
+      command:
+        - app.brainstorm_worker.handler
+  scrapeWorker:
+    timeout: 900
+    image:
+      name: api
+      command:
+        - app.scrape_worker.handler
 
 resources:
   Resources:
-    UsersTable:
+    AppTable:
       Type: AWS::DynamoDB::Table
       DeletionPolicy: Retain
       UpdateReplacePolicy: Retain
       Properties:
-        TableName: ${self:custom.tablePrefix}_users
+        TableName: ${self:custom.tablePrefix}_app
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: user_id
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
             AttributeType: S
         KeySchema:
-          - AttributeName: user_id
+          - AttributeName: PK
             KeyType: HASH
-
-    ThreadsTable:
-      Type: AWS::DynamoDB::Table
-      DeletionPolicy: Retain
-      UpdateReplacePolicy: Retain
-      Properties:
-        TableName: ${self:custom.tablePrefix}_threads
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: user_id
-            AttributeType: S
-          - AttributeName: thread_id
-            AttributeType: S
-        KeySchema:
-          - AttributeName: user_id
-            KeyType: HASH
-          - AttributeName: thread_id
-            KeyType: RANGE
-
-    CreatorsTable:
-      Type: AWS::DynamoDB::Table
-      DeletionPolicy: Retain
-      UpdateReplacePolicy: Retain
-      Properties:
-        TableName: ${self:custom.tablePrefix}_creators
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: user_id
-            AttributeType: S
-          - AttributeName: creator_id
-            AttributeType: S
-        KeySchema:
-          - AttributeName: user_id
-            KeyType: HASH
-          - AttributeName: creator_id
-            KeyType: RANGE
-
-    ActivitiesTable:
-      Type: AWS::DynamoDB::Table
-      DeletionPolicy: Retain
-      UpdateReplacePolicy: Retain
-      Properties:
-        TableName: ${self:custom.tablePrefix}_activities
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: user_creator_id
-            AttributeType: S
-          - AttributeName: post_id
-            AttributeType: S
-        KeySchema:
-          - AttributeName: user_creator_id
-            KeyType: HASH
-          - AttributeName: post_id
+          - AttributeName: SK
             KeyType: RANGE

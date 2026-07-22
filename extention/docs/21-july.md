@@ -58,6 +58,13 @@ endpoints.
 - `POST /extension/tasks/{task_id}/result`: reports extracted data or an error.
 - `GET /extension/status`: reports connection and queued/active task counts.
 
+## Production queue update (22 July)
+
+- Extension clients and scrape tasks now use the shared DynamoDB application table instead of backend process memory.
+- Each queue is isolated with `PK=EXTENSION#{user_id}`. Client heartbeats use `SK=CLIENT#{extension_id}` and work tasks use `SK=TASK#{task_id}`.
+- The extension settings page now requires the same application user ID used by the frontend (normally `test-user-1` locally).
+- This is routing isolation, not authentication. Authentication remains intentionally out of scope.
+
 If `EXTENSION_API_TOKEN` is set in FastAPI, enter the same token in the
 extension settings. A blank value on both sides is allowed for local-only use.
 

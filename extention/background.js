@@ -1,5 +1,6 @@
 const DEFAULT_SETTINGS = {
   backendUrl: "http://localhost:7860",
+  userId: "test-user-1",
   apiToken: "",
   enabled: true,
   extensionId: "",
@@ -159,6 +160,7 @@ async function reportTask(settings, task, status, data = null, error = "") {
     method: "POST",
     body: JSON.stringify({
       extension_id: settings.extensionId,
+      user_id: settings.userId,
       status,
       data,
       error
@@ -172,7 +174,11 @@ async function pollBackend() {
   try {
     const settings = await getSettings();
     if (!settings.enabled) return;
-    const query = new URLSearchParams({ extension_id: settings.extensionId, version: VERSION });
+    const query = new URLSearchParams({
+      extension_id: settings.extensionId,
+      user_id: settings.userId,
+      version: VERSION
+    });
     const response = await apiFetch(settings, `/extension/tasks/next?${query.toString()}`);
     await updateState({ lastHeartbeatAt: new Date().toISOString(), lastError: "" });
     if (!response.task) return;

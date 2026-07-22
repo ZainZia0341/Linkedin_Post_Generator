@@ -1,9 +1,11 @@
 const DEFAULT_SETTINGS = {
   backendUrl: "http://localhost:7860",
+  userId: "test-user-1",
   apiToken: ""
 };
 
 const backendUrl = document.getElementById("backendUrl");
+const userId = document.getElementById("userId");
 const apiToken = document.getElementById("apiToken");
 const message = document.getElementById("message");
 const save = document.getElementById("save");
@@ -16,19 +18,23 @@ function normalizedUrl(value) {
 async function load() {
   const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
   backendUrl.value = settings.backendUrl;
+  userId.value = settings.userId;
   apiToken.value = settings.apiToken;
 }
 
 async function persist() {
   const url = normalizedUrl(backendUrl.value);
   if (!/^https?:\/\//i.test(url)) throw new Error("Enter a complete HTTP or HTTPS backend URL.");
-  await chrome.storage.local.set({ backendUrl: url, apiToken: apiToken.value.trim() });
-  return { backendUrl: url, apiToken: apiToken.value.trim() };
+  const owner = userId.value.trim();
+  if (!owner) throw new Error("Enter the application user ID.");
+  await chrome.storage.local.set({ backendUrl: url, userId: owner, apiToken: apiToken.value.trim() });
+  return { backendUrl: url, userId: owner, apiToken: apiToken.value.trim() };
 }
 
 async function check(settings) {
   const headers = settings.apiToken ? { "X-Extension-Token": settings.apiToken } : {};
-  const response = await fetch(`${settings.backendUrl}/extension/status`, { headers });
+  const query = new URLSearchParams({ user_id: settings.userId });
+  const response = await fetch(`${settings.backendUrl}/extension/status?${query}`, { headers });
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
     try {

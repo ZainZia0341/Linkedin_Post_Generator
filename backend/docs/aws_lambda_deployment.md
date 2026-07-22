@@ -1,100 +1,107 @@
 # AWS Lambda Backend Deployment
 
-This backend is prepared for a container-image Lambda behind API Gateway HTTP
-API. The Lambda serves FastAPI through Mangum and uses DynamoDB tables created
-by `serverless.yml`.
+The FastAPI backend runs through Mangum in a container-image Lambda. The API,
+brainstorm worker, and scrape worker reuse one `linux/amd64` image. Application
+records, async jobs, and extension tasks use one DynamoDB table:
 
-Browser scraping is intentionally disabled in the deployed Lambda. Run the
-local FastAPI backend with the Chrome extension and point the local backend env
-vars at the AWS DynamoDB tables so the deployed API can read the saved
-creator/activity data. The legacy Playwright endpoints remain in the backend,
-but the normal async scrape jobs use the extension.
+```text
+linkedin_post_generator_<stage>_app
+```
 
-## AWS Setup
+The Chrome extension is the production scraping engine. The legacy Playwright
+implementation remains available with `SCRAPE_ENGINE=playwright` on a machine
+that can run Chrome; the existing headed Playwright flow is not suitable for
+Lambda.
 
-Configure credentials locally. Do not commit AWS keys.
+## Deploy
+
+Docker Desktop must be running. Configure AWS once, then set deployment secrets
+in the current PowerShell session:
 
 ```powershell
 aws configure --profile Team-GV-Zain
 $env:AWS_PROFILE="Team-GV-Zain"
 $env:AWS_DEFAULT_REGION="us-east-2"
-```
-
-Set provider secrets in your shell before deploy, or replace these with SSM /
-Secrets Manager variables later:
-
-```powershell
 $env:GOOGLE_API_KEY="..."
 $env:GROQ_API_KEY="..."
 $env:ANTHROPIC_API_KEY="..."
 $env:TAVILY_API_KEY="..."
-```
+$env:SCRAPE_ENGINE="extension"
+$env:DOCKER_DEFAULT_PLATFORM="linux/amd64"
+$env:BUILDX_NO_DEFAULT_ATTESTATIONS="1"
 
-## Deploy Backend
-
-Docker must be running because Serverless builds and pushes an ECR image.
-
-```powershell
 cd backend
 npm install -g serverless
 serverless deploy --stage dev --region us-east-2
 ```
 
-After deploy, copy the HTTP API endpoint from the Serverless output and test:
+Serverless builds and pushes the ECR image. A separate ECR login, `docker push`,
+or one image build per Lambda is not normally required. If Lambda reports an
+unsupported image manifest, keep the two Docker variables above and run the
+same command once with `--force`. The image must be single-platform amd64, not
+an ARM or multi-platform image/index.
+
+Test the URL printed by Serverless:
 
 ```powershell
 curl https://YOUR_HTTP_API_ID.execute-api.us-east-2.amazonaws.com/health
 ```
 
-The stack creates these DynamoDB tables:
+## One-time migration
 
-```text
-linkedin_post_generator_dev_users
-linkedin_post_generator_dev_threads
-linkedin_post_generator_dev_creators
-linkedin_post_generator_dev_activities
-```
-
-## Local Scraping Into AWS DynamoDB
-
-Use this when you want local extension scraping to populate the deployed
-DynamoDB tables.
+The first single-table deployment creates the `_app` table but does not copy
+legacy data. Migrate the four retained legacy tables once:
 
 ```powershell
 cd backend
 $env:AWS_PROFILE="Team-GV-Zain"
-$env:AWS_DEFAULT_REGION="us-east-2"
-$env:APP_ENV="dev"
-$env:DYNAMODB_TABLE_PREFIX="linkedin_post_generator_dev"
-$env:SCRAPING_ENABLED="true"
-$env:SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS="0"
-$env:SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS="240"
-$env:EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS="300"
-$env:EXTENSION_SCRAPE_TASK_LEASE_SECONDS="120"
-$env:EXTENSION_API_TOKEN=""
-Remove-Item Env:\DYNAMODB_ENDPOINT_URL -ErrorAction SilentlyContinue
-uv run uvicorn app.api.main:app --reload --host 127.0.0.1 --port 7860
+uv run python scripts/migrate_dynamodb_to_single_table.py --prefix linkedin_post_generator_dev --region us-east-2
 ```
 
-Then run scraping from the local frontend or call the local scrape endpoints.
-The saved data lands in AWS DynamoDB and is readable by the deployed Lambda API.
-The extension must be loaded in the Chrome profile that is signed in to the
-burner LinkedIn account. Each creator task waits for a newly randomized delay
-within the configured minimum and maximum. Change these shell values, or the
-matching values in `.env`, before starting the backend to use a different
-range.
+The migration is idempotent. Verify the application before deleting legacy
+tables; this stack retains them and does not destroy the source records.
 
-## Vercel Frontend Env
+## Extension production setup
 
-For Vercel, set:
+1. Reload or install the updated extension.
+2. In Extension options, use the deployed API URL as Backend URL.
+3. Set Application user ID to the same ID used by the frontend.
+4. Keep Chrome signed in to the intended LinkedIn account.
+5. Set `NEXT_PUBLIC_ENABLE_SCRAPING=true` in the deployed frontend.
+
+Extension tasks and heartbeats are stored under `PK=EXTENSION#{user_id}`, so
+separate application users do not claim each other's work. This routing is not
+authentication; authentication is intentionally deferred.
+
+## Timing settings
 
 ```text
-API_BASE_URL=https://YOUR_HTTP_API_ID.execute-api.us-east-2.amazonaws.com
-NEXT_PUBLIC_DEFAULT_USER_ID=test-user-1
-NEXT_PUBLIC_ENABLE_SCRAPING=false
+SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS=0
+SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS=240
+SCRAPE_LONG_BREAK_EVERY_CREATORS=10
+SCRAPE_LONG_BREAK_MIN_SECONDS=300
+SCRAPE_LONG_BREAK_MAX_SECONDS=600
+EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS=300
+EXTENSION_SCRAPE_TASK_LEASE_SECONDS=120
 ```
 
-`NEXT_PUBLIC_ENABLE_SCRAPING=false` keeps the deployed frontend from trying to
-run browser-backed scrape actions through Lambda. The extension task broker and
-the current scrape-job runner are process-local, so use the local frontend and
-local FastAPI process for scraping.
+The normal random delay runs between creators. Before creator 11, 21, 31, and
+so on, the configured longer random break also runs. Set the `EVERY` value to
+`0` to disable long breaks.
+
+AWS Lambda has a hard 15-minute execution limit. Extension payloads and status
+are persisted in DynamoDB, but the current scrape worker still waits for each
+creator sequentially. Keep each production batch small enough that task waits
+and configured delays stay below 15 minutes. Large batches with periodic
+5-10 minute breaks require a future SQS or Step Functions continuation flow;
+Lambda timeout cannot be increased beyond 900 seconds.
+
+## Redeployment checklist
+
+- Backend: deploy now because Python, IAM, environment, workers, and DynamoDB
+  resources changed. One `serverless deploy` updates all Lambda functions.
+- Frontend: redeploy once because brainstorming now polls its async job every
+  60 seconds.
+- Extension: reload the unpacked extension because it now sends `user_id`.
+- Later deployments are only needed after relevant code, dependency,
+  `serverless.yml`, or environment changes.

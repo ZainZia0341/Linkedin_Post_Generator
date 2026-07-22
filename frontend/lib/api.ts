@@ -2,6 +2,8 @@ import type {
   ActivityResponse,
   BulkCreatorImportResponse,
   BulkCreatorPreviewResponse,
+  BrainstormJobStartResponse,
+  BrainstormJobStatusResponse,
   BrainstormResponse,
   CarouselResponse,
   CommentedActivityResponse,
@@ -267,7 +269,7 @@ export function runRecentScrape(payload: {
   return apiFetch<ScrapeJobStartResponse>("/scrape-jobs/creators/recent-24h", {
     method: "POST",
     body: JSON.stringify(payload),
-  }).then((job) => pollScrapeJobUntilDone(job.job_id, onStatus))
+  }).then((job) => pollScrapeJobUntilDone(payload.user_id, job.job_id, onStatus))
     .then((status) => {
       if (status.status === "failed") {
         throw new Error(status.message || status.errors[0]?.message || "Scraping failed.");
@@ -293,7 +295,7 @@ export function scrapeCreatorProfiles(
       creator_ids: creatorIds,
       launch_delay_seconds: launchDelaySeconds,
     }),
-  }).then((job) => pollScrapeJobUntilDone(job.job_id, onStatus))
+  }).then((job) => pollScrapeJobUntilDone(userId, job.job_id, onStatus))
     .then((status) => {
       if (status.status === "failed") {
         throw new Error(status.message || status.errors[0]?.message || "Profile scraping failed.");
@@ -306,8 +308,10 @@ export function scrapeCreatorProfiles(
   });
 }
 
-export function fetchScrapeJobStatus(jobId: string) {
-  return apiFetch<ScrapeJobStatusResponse>(`/scrape-jobs/${encodeURIComponent(jobId)}`);
+export function fetchScrapeJobStatus(userId: string, jobId: string) {
+  return apiFetch<ScrapeJobStatusResponse>(
+    `/scrape-jobs/${encodeURIComponent(jobId)}?user_id=${encodeURIComponent(userId)}`,
+  );
 }
 
 function isTerminalScrapeJob(status: ScrapeJobStatusResponse) {
@@ -315,12 +319,13 @@ function isTerminalScrapeJob(status: ScrapeJobStatusResponse) {
 }
 
 async function pollScrapeJobUntilDone(
+  userId: string,
   jobId: string,
   onStatus?: (status: ScrapeJobStatusResponse) => void,
   intervalMs = SCRAPE_JOB_POLL_INTERVAL_MS,
 ): Promise<ScrapeJobStatusResponse> {
   for (;;) {
-    const status = await fetchScrapeJobStatus(jobId);
+    const status = await fetchScrapeJobStatus(userId, jobId);
     onStatus?.(status);
     if (isTerminalScrapeJob(status)) return status;
     await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
@@ -404,11 +409,21 @@ export function refinePost(payload: {
   });
 }
 
-export function brainstormIdeas(payload: { user_id: string; topic?: string; action?: string }) {
-  return apiFetch<BrainstormResponse>("/ideas/brainstorm", {
+export async function brainstormIdeas(payload: { user_id: string; topic?: string; action?: string }) {
+  const job = await apiFetch<BrainstormJobStartResponse>("/ideas/brainstorm", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+
+  while (true) {
+    await new Promise((resolve) => window.setTimeout(resolve, 60_000));
+    const status = await apiFetch<BrainstormJobStatusResponse>(
+      `/ideas/brainstorm/jobs/${encodeURIComponent(job.job_id)}?user_id=${encodeURIComponent(payload.user_id)}`,
+      { cache: "no-store" },
+    );
+    if (status.status === "succeeded" && status.result) return status.result;
+    if (status.status === "failed") throw new Error(status.error || "Brainstorming failed.");
+  }
 }
 
 export function generatePostBuilder(payload: {

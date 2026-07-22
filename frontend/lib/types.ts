@@ -428,3 +428,22 @@ export type BrainstormResponse = {
   provider: string;
   model: string;
 };
+
+export type BrainstormJobStartResponse = {
+  job_id: string;
+  user_id: string;
+  status: "queued";
+  created_at: string;
+};
+
+export type BrainstormJobStatusResponse = {
+  job_id: string;
+  user_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  created_at: string;
+  started_at: string;
+  completed_at: string;
+  elapsed_seconds: number | null;
+  error: string;
+  result: BrainstormResponse | null;
+};

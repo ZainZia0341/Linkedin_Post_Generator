@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import io
 import json
+import os
 import random
 import re
 from threading import Lock
@@ -70,7 +71,11 @@ from app.config import (
     PROVIDER_MODELS,
     SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS,
     SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
+    SCRAPE_LONG_BREAK_EVERY_CREATORS,
+    SCRAPE_LONG_BREAK_MAX_SECONDS,
+    SCRAPE_LONG_BREAK_MIN_SECONDS,
     SCRAPE_MAX_WORKERS,
+    SCRAPE_ENGINE,
 )
 from app.creator_tracking import get_profile_id, normalize_linkedin_profile_url
 from app.db.dynamodb import DynamoRepository
@@ -191,7 +196,19 @@ def _sleep_before_playwright_launch(launch_delay_seconds: float | int | None) ->
         time.sleep(delay)
 
 
-def _sleep_before_creator_scrape(launch_delay_seconds: float | int | None) -> None:
+def _sleep_before_creator_scrape(
+    launch_delay_seconds: float | int | None,
+    creator_ordinal: int = 1,
+) -> None:
+    if (
+        SCRAPE_LONG_BREAK_EVERY_CREATORS > 0
+        and creator_ordinal > 1
+        and (creator_ordinal - 1) % SCRAPE_LONG_BREAK_EVERY_CREATORS == 0
+    ):
+        long_delay = random.uniform(SCRAPE_LONG_BREAK_MIN_SECONDS, SCRAPE_LONG_BREAK_MAX_SECONDS)
+        if long_delay > 0:
+            print(f"Taking a {long_delay:.1f} second scraping break after {creator_ordinal - 1} creators.")
+            time.sleep(long_delay)
     if SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS <= 0:
         _sleep_before_playwright_launch(launch_delay_seconds)
         return
@@ -207,7 +224,10 @@ def _sleep_before_creator_scrape(launch_delay_seconds: float | int | None) -> No
 def _creator_scrape_worker_count(creator_count: int, *, use_extension: bool = False) -> int:
     if use_extension:
         return 1
-    if creator_count > 1 and SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS > 0:
+    if creator_count > 1 and (
+        SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS > 0
+        or (SCRAPE_LONG_BREAK_EVERY_CREATORS > 0 and SCRAPE_LONG_BREAK_MAX_SECONDS > 0)
+    ):
         return 1
     if LINKEDIN_AUTOMATION_MODE.strip().lower() == "burner":
         return 1
@@ -815,8 +835,8 @@ def scrape_creator_profile_details(
     errors: list[dict[str, str]] = []
     profiles: list[CreatorProfileDetailsResponse] = []
 
-    def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        _sleep_before_creator_scrape(request.launch_delay_seconds)
+    def scrape_one(creator: dict[str, Any], ordinal: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        _sleep_before_creator_scrape(request.launch_delay_seconds, ordinal)
         return creator, _fetch_creator_profile(request.user_id, creator, use_extension=use_extension)
 
     max_workers = _creator_scrape_worker_count(len(creators), use_extension=use_extension)
@@ -824,7 +844,10 @@ def scrape_creator_profile_details(
         print("Running creator profile scrapes sequentially with the configured inter-creator delay.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
+        future_map = {
+            executor.submit(scrape_one, creator, ordinal): creator
+            for ordinal, creator in enumerate(creators, start=1)
+        }
         for future in as_completed(future_map):
             creator = future_map[future]
             timestamp = now_iso()
@@ -1264,8 +1287,8 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
     errors: list[dict[str, str]] = []
     new_activities: list[ActivityResponse] = []
 
-    def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        _sleep_before_creator_scrape(request.launch_delay_seconds)
+    def scrape_one(creator: dict[str, Any], ordinal: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        _sleep_before_creator_scrape(request.launch_delay_seconds, ordinal)
         posts = _fetch_creator_posts(request.user_id, creator, request.max_posts)
         return creator, posts
 
@@ -1274,7 +1297,10 @@ def scrape_creators(repo: DynamoRepository, request: ScrapeCreatorsRequest) -> S
         print("Running creator post scrapes sequentially with the configured inter-creator delay.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
+        future_map = {
+            executor.submit(scrape_one, creator, ordinal): creator
+            for ordinal, creator in enumerate(creators, start=1)
+        }
         for future in as_completed(future_map):
             creator = future_map[future]
             timestamp = now_iso()
@@ -1348,8 +1374,8 @@ def scrape_creators_recent_24h(
     activities: list[ActivityResponse] = []
     newly_saved_count = 0
 
-    def scrape_one(creator: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        _sleep_before_creator_scrape(request.launch_delay_seconds)
+    def scrape_one(creator: dict[str, Any], ordinal: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        _sleep_before_creator_scrape(request.launch_delay_seconds, ordinal)
         posts = _fetch_creator_posts(
             request.user_id,
             creator,
@@ -1363,7 +1389,10 @@ def scrape_creators_recent_24h(
         print("Running creator post scrapes sequentially with the configured inter-creator delay.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(scrape_one, creator): creator for creator in creators}
+        future_map = {
+            executor.submit(scrape_one, creator, ordinal): creator
+            for ordinal, creator in enumerate(creators, start=1)
+        }
         for future in as_completed(future_map):
             creator = future_map[future]
             timestamp = now_iso()
@@ -1475,25 +1504,27 @@ def _job_start_response(record: dict[str, Any]) -> ScrapeJobStartResponse:
     )
 
 
-def _save_scrape_job(record: dict[str, Any]) -> None:
+def _save_scrape_job(repo: DynamoRepository, record: dict[str, Any]) -> None:
     with _SCRAPE_JOB_LOCK:
         _SCRAPE_JOBS[str(record["job_id"])] = dict(record)
+    repo.put_job(record)
 
 
-def _update_scrape_job(job_id: str, **updates: Any) -> None:
+def _update_scrape_job(repo: DynamoRepository, user_id: str, job_id: str, **updates: Any) -> None:
     with _SCRAPE_JOB_LOCK:
-        current = dict(_SCRAPE_JOBS.get(job_id) or {})
+        current = dict(_SCRAPE_JOBS.get(job_id) or repo.get_job(user_id, job_id) or {})
         if not current:
             return
         current.update(updates)
         current["updated_at"] = now_iso()
         _SCRAPE_JOBS[job_id] = current
+    repo.put_job(current)
 
 
-def _scrape_job_progress(job_id: str, job_type: str) -> Callable[[dict[str, Any]], None]:
+def _scrape_job_progress(repo: DynamoRepository, user_id: str, job_id: str, job_type: str) -> Callable[[dict[str, Any]], None]:
     def update(event: dict[str, Any]) -> None:
         with _SCRAPE_JOB_LOCK:
-            current = dict(_SCRAPE_JOBS.get(job_id) or {})
+            current = dict(_SCRAPE_JOBS.get(job_id) or repo.get_job(user_id, job_id) or {})
             if not current:
                 return
             current["scraped_creators"] = int(current.get("scraped_creators") or 0) + 1
@@ -1520,6 +1551,7 @@ def _scrape_job_progress(job_id: str, job_type: str) -> Callable[[dict[str, Any]
                 current["errors"] = errors
             current["updated_at"] = now_iso()
             _SCRAPE_JOBS[job_id] = current
+        repo.put_job(current)
 
     return update
 
@@ -1530,6 +1562,7 @@ def _create_scrape_job(
     job_type: str,
     total_creators: int,
     runner: Callable[[str], None],
+    worker_event: dict[str, Any],
 ) -> ScrapeJobStartResponse:
     require_user(repo, user_id)
     timestamp = now_iso()
@@ -1552,8 +1585,18 @@ def _create_scrape_job(
         "errors": [],
         "result": {},
     }
-    _save_scrape_job(record)
-    _SCRAPE_JOB_EXECUTOR.submit(runner, job_id)
+    _save_scrape_job(repo, record)
+    worker_name = os.getenv("SCRAPE_WORKER_FUNCTION_NAME", "").strip()
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME") and worker_name:
+        import boto3
+
+        boto3.client("lambda").invoke(
+            FunctionName=worker_name,
+            InvocationType="Event",
+            Payload=json.dumps({**worker_event, "job_id": job_id}).encode("utf-8"),
+        )
+    else:
+        _SCRAPE_JOB_EXECUTOR.submit(runner, job_id)
     return _job_start_response(record)
 
 
@@ -1564,15 +1607,15 @@ def start_recent_scrape_job(
     total_creators = _target_creator_count(repo, request.user_id, request.creator_ids)
 
     def run(job_id: str) -> None:
-        _update_scrape_job(job_id, status="running", started_at=now_iso(), message="Scraping creator posts.")
+        _update_scrape_job(repo, request.user_id, job_id, status="running", started_at=now_iso(), message="Scraping creator posts.")
         try:
             response = scrape_creators_recent_24h(
                 repo,
                 request,
-                progress_callback=_scrape_job_progress(job_id, "creator_posts"),
-                use_extension=True,
+                progress_callback=_scrape_job_progress(repo, request.user_id, job_id, "creator_posts"),
+                use_extension=SCRAPE_ENGINE == "extension",
             )
-            _update_scrape_job(
+            _update_scrape_job(repo, request.user_id,
                 job_id,
                 status="succeeded",
                 completed_at=now_iso(),
@@ -1586,7 +1629,7 @@ def start_recent_scrape_job(
                 ),
             )
         except Exception as exc:
-            _update_scrape_job(
+            _update_scrape_job(repo, request.user_id,
                 job_id,
                 status="failed",
                 completed_at=now_iso(),
@@ -1594,7 +1637,14 @@ def start_recent_scrape_job(
                 message=str(exc),
             )
 
-    return _create_scrape_job(repo, request.user_id, "creator_posts", total_creators, run)
+    return _create_scrape_job(
+        repo,
+        request.user_id,
+        "creator_posts",
+        total_creators,
+        run,
+        {"job_type": "creator_posts", "request": request.model_dump()},
+    )
 
 
 def start_profile_scrape_job(
@@ -1604,15 +1654,15 @@ def start_profile_scrape_job(
     total_creators = _target_creator_count(repo, request.user_id, request.creator_ids)
 
     def run(job_id: str) -> None:
-        _update_scrape_job(job_id, status="running", started_at=now_iso(), message="Scraping creator profiles.")
+        _update_scrape_job(repo, request.user_id, job_id, status="running", started_at=now_iso(), message="Scraping creator profiles.")
         try:
             response = scrape_creator_profile_details(
                 repo,
                 request,
-                progress_callback=_scrape_job_progress(job_id, "creator_profiles"),
-                use_extension=True,
+                progress_callback=_scrape_job_progress(repo, request.user_id, job_id, "creator_profiles"),
+                use_extension=SCRAPE_ENGINE == "extension",
             )
-            _update_scrape_job(
+            _update_scrape_job(repo, request.user_id,
                 job_id,
                 status="succeeded",
                 completed_at=now_iso(),
@@ -1626,7 +1676,7 @@ def start_profile_scrape_job(
                 ),
             )
         except Exception as exc:
-            _update_scrape_job(
+            _update_scrape_job(repo, request.user_id,
                 job_id,
                 status="failed",
                 completed_at=now_iso(),
@@ -1634,12 +1684,62 @@ def start_profile_scrape_job(
                 message=str(exc),
             )
 
-    return _create_scrape_job(repo, request.user_id, "creator_profiles", total_creators, run)
+    return _create_scrape_job(
+        repo,
+        request.user_id,
+        "creator_profiles",
+        total_creators,
+        run,
+        {"job_type": "creator_profiles", "request": request.model_dump()},
+    )
 
 
-def get_scrape_job(job_id: str) -> ScrapeJobStatusResponse:
+def run_scrape_worker(event: dict[str, Any]) -> None:
+    """Execute an already-created scrape job inside the long-running Lambda worker."""
+    from app.db.dynamodb import get_repository
+
+    repo = get_repository()
+    job_id = str(event["job_id"])
+    job_type = str(event["job_type"])
+    if job_type == "creator_posts":
+        request = RecentScrapeCreatorsRequest.model_validate(event["request"])
+        _update_scrape_job(repo, request.user_id, job_id, status="running", started_at=now_iso(), message="Scraping creator posts.")
+        try:
+            response = scrape_creators_recent_24h(
+                repo,
+                request,
+                progress_callback=_scrape_job_progress(repo, request.user_id, job_id, job_type),
+                use_extension=SCRAPE_ENGINE == "extension",
+            )
+            _update_scrape_job(
+                repo, request.user_id, job_id, status="succeeded", completed_at=now_iso(),
+                total_posts=len(response.activities), errors=response.errors, result=response.model_dump(),
+                message=f"Completed {len(response.checked_creator_ids)} creator scrapes; {len(response.activities)} posts found.",
+            )
+        except Exception as exc:
+            _update_scrape_job(repo, request.user_id, job_id, status="failed", completed_at=now_iso(), errors=[{"message": str(exc)}], message=str(exc))
+        return
+    request = ScrapeCreatorProfilesRequest.model_validate(event["request"])
+    _update_scrape_job(repo, request.user_id, job_id, status="running", started_at=now_iso(), message="Scraping creator profiles.")
+    try:
+        response = scrape_creator_profile_details(
+            repo,
+            request,
+            progress_callback=_scrape_job_progress(repo, request.user_id, job_id, job_type),
+            use_extension=SCRAPE_ENGINE == "extension",
+        )
+        _update_scrape_job(
+            repo, request.user_id, job_id, status="succeeded", completed_at=now_iso(),
+            scraped_profiles=len(response.profiles), errors=response.errors, result=response.model_dump(),
+            message=f"Completed {len(response.checked_creator_ids)} profile scrapes; {len(response.profiles)} profiles saved.",
+        )
+    except Exception as exc:
+        _update_scrape_job(repo, request.user_id, job_id, status="failed", completed_at=now_iso(), errors=[{"message": str(exc)}], message=str(exc))
+
+
+def get_scrape_job(repo: DynamoRepository, user_id: str, job_id: str) -> ScrapeJobStatusResponse:
     with _SCRAPE_JOB_LOCK:
-        record = dict(_SCRAPE_JOBS.get(job_id) or {})
+        record = dict(_SCRAPE_JOBS.get(job_id) or repo.get_job(user_id, job_id) or {})
     if not record:
         raise KeyError(f"Scrape job not found: {job_id}")
     return _job_response(record)
