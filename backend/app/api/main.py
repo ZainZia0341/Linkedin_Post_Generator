@@ -632,6 +632,22 @@ def list_creator_activities(
     ]
 
 
+@app.delete(
+    "/users/{user_id}/creators/{creator_id}/activities/{post_id}",
+    response_model=DeleteResponse,
+)
+def delete_creator_activity(
+    user_id: str,
+    creator_id: str,
+    post_id: str,
+    repo: Annotated[DynamoRepository, Depends(repo_dependency)],
+) -> DeleteResponse:
+    if not repo.get_activity(user_id, creator_id, post_id):
+        raise HTTPException(status_code=404, detail=f"Scraped post not found: {post_id}")
+    repo.delete_activity(user_id, creator_id, post_id)
+    return DeleteResponse(ok=True, message="Scraped post deleted.")
+
+
 @app.get("/users/{user_id}/activities", response_model=list[ActivityResponse])
 def list_user_activities(
     user_id: str,

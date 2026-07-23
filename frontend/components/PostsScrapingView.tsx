@@ -14,6 +14,7 @@ import { AppShell } from "@/components/AppShell";
 import { RunScrapingDialog } from "@/components/RunScrapingDialog";
 import {
   DEFAULT_USER_ID,
+  deleteCreatorActivity,
   ENABLE_SCRAPING,
   fetchCreatorProfiles,
   fetchUserActivities,
@@ -246,6 +247,14 @@ export function PostsScrapingView() {
           creator={creatorById.get(selectedPost.creator_id)}
           profile={profileMap.get(selectedPost.creator_id)}
           onClose={() => setSelectedPost(null)}
+          onDelete={async (activity) => {
+            await deleteCreatorActivity(DEFAULT_USER_ID, activity.creator_id, activity.post_id);
+            setActivities((current) => current.filter(
+              (item) => item.creator_id !== activity.creator_id || item.post_id !== activity.post_id,
+            ));
+            setSelectedPost(null);
+            showSuccess("Scraped post deleted");
+          }}
         />
       ) : null}
 
@@ -285,6 +294,7 @@ function ScrapedPostCard({
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
   const isNew = isFetchedWithinLastDay(activity);
   const postUrl = directPostUrl(activity);
+  const profileUrl = creator?.profile_url || profile?.profile_url || "";
   const repostText = activity.is_repost ? activity.repost_text?.trim() || "" : "";
   const originalText = activity.original_post_text?.trim() || activity.raw_text;
 
@@ -307,13 +317,23 @@ function ScrapedPostCard({
     >
       <header className="post-card-header">
         <div className="post-author">
-          <div className="avatar mini">
-            {profile?.profile_image_url ? (
-              <img src={profile.profile_image_url} alt={`${name} profile`} />
-            ) : (
-              initials(name)
-            )}
-          </div>
+          {profileUrl ? (
+            <a
+              className="avatar mini"
+              href={profileUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open ${name} on LinkedIn`}
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {profile?.profile_image_url ? <img src={profile.profile_image_url} alt="" /> : initials(name)}
+            </a>
+          ) : (
+            <div className="avatar mini">
+              {profile?.profile_image_url ? <img src={profile.profile_image_url} alt="" /> : initials(name)}
+            </div>
+          )}
           <span>
             <strong>{name}</strong>
             <small>{profile?.headline || creator?.display_name || "Creator"} - Posted {postedText}</small>
@@ -369,17 +389,21 @@ function ScrapedPostDetailsDrawer({
   creator,
   profile,
   onClose,
+  onDelete,
 }: {
   activity: ActivityResponse;
   creator?: CreatorResponse;
   profile?: CreatorProfileDetailsResponse;
   onClose: () => void;
+  onDelete: (activity: ActivityResponse) => Promise<void>;
 }) {
   const name = profile?.name || activity.author_name || creator?.display_name || activity.creator_id;
   const postedText = cleanLinkedInVisibilityText(activity.posted_at_text || "recently");
   const postUrl = directPostUrl(activity);
   const repostText = activity.is_repost ? activity.repost_text?.trim() || "" : "";
   const originalText = activity.original_post_text?.trim() || activity.raw_text;
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   async function copyText(value: string) {
     await navigator.clipboard.writeText(value);
@@ -469,10 +493,26 @@ function ScrapedPostDetailsDrawer({
                 Open post
               </a>
             ) : null}
-            <button className="danger-button compact" type="button" disabled title="Backend delete endpoint needed">
+            <button
+              className="danger-button compact"
+              type="button"
+              disabled={deleting}
+              onClick={async () => {
+                if (!window.confirm("Delete this scraped post?")) return;
+                setDeleting(true);
+                setDeleteError("");
+                try {
+                  await onDelete(activity);
+                } catch (error) {
+                  setDeleteError(error instanceof Error ? error.message : "Could not delete scraped post.");
+                  setDeleting(false);
+                }
+              }}
+            >
               <Trash2 size={15} />
-              Delete Scraped Post
+              {deleting ? "Deleting..." : "Delete Scraped Post"}
             </button>
+            {deleteError ? <div className="error-banner">{deleteError}</div> : null}
           </section>
         </div>
         <footer className="post-detail-footer">

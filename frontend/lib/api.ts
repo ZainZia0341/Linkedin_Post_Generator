@@ -189,6 +189,16 @@ export function fetchCreatorActivities(userId: string, creatorId: string, limit 
   );
 }
 
+export function deleteCreatorActivity(userId: string, creatorId: string, postId: string) {
+  return apiFetch<DeleteResponse>(
+    `/users/${encodeURIComponent(userId)}/creators/${encodeURIComponent(creatorId)}/activities/${encodeURIComponent(postId)}`,
+    { method: "DELETE" },
+  ).then((result) => {
+    clearUserWorkflowCache(userId);
+    return result;
+  });
+}
+
 export function fetchPostTypes() {
   return apiFetch<string[]>("/post-generation-styles");
 }
