@@ -225,7 +225,29 @@ class DynamoRepository:
         return self._get(self._extension_pk(user_id), f"TASK#{task_id}")
 
     def list_extension_tasks(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
-        return self._query(self._extension_pk(user_id), "TASK#", limit, scan_forward=True)
+        query: dict[str, Any] = {
+            "KeyConditionExpression": (
+                Key("PK").eq(self._extension_pk(user_id))
+                & Key("SK").begins_with("TASK#")
+            ),
+            "ScanIndexForward": True,
+        }
+        if limit is not None:
+            query["Limit"] = limit
+
+        items: list[dict[str, Any]] = []
+        while True:
+            response = self.table.query(**query)
+            items.extend(
+                _without_keys(_clean_from_dynamodb(item))
+                for item in response.get("Items", [])
+            )
+            if limit is not None and len(items) >= limit:
+                return items[:limit]
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                return items
+            query["ExclusiveStartKey"] = last_key
 
     def delete_extension_task(self, user_id: str, task_id: str) -> None:
         self.table.delete_item(
