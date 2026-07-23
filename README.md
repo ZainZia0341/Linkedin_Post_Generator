@@ -275,3 +275,10 @@ https://linkedin-post-generator-git-dev-zain-zias-projects.vercel.app/dashboard
 # Lambda backend url dev
 https://ysshbf0inb.execute-api.us-east-2.amazonaws.com
 
+endpoints:
+  ANY - https://ysshbf0inb.execute-api.us-east-2.amazonaws.com/
+  ANY - https://ysshbf0inb.execute-api.us-east-2.amazonaws.com/{proxy+}
+functions:
+  api: linkedin-post-generator-backend-dev-api
+  brainstormWorker: linkedin-post-generator-backend-dev-brainstormWorker
+  scrapeWorker: linkedin-post-generator-backend-dev-scrapeWorker
