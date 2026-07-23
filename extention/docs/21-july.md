@@ -15,18 +15,23 @@ do not fall back to Playwright.
 ## Current Flow
 
 1. The frontend starts the existing async creator-post or creator-profile job.
-2. FastAPI processes creators one at a time.
-3. Before each creator, FastAPI chooses a fresh random delay between
-   `SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS` and
-   `SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS`.
-4. FastAPI queues one extension task and waits for its bounded result.
-5. The extension polls FastAPI, claims the task, and opens an inactive LinkedIn
-   tab in the already signed-in Chrome profile.
-6. The content script extracts post or profile data from the live DOM and sends
+2. FastAPI saves one parent job and one durable queue task per creator, then
+   returns immediately. Lambda does not wait for Chrome or sleep.
+3. The extension polls FastAPI, claims the oldest available task, and opens an
+   inactive LinkedIn tab in the already signed-in Chrome profile.
+4. The content script extracts post or profile data from the live DOM and sends
    the result to FastAPI.
-7. FastAPI validates, deduplicates, and saves the data through the existing
-   repository code. Existing frontend job-status polling shows progress,
-   creator counts, post counts, and errors.
+5. FastAPI validates, deduplicates, and saves the result, marks that queue item
+   processed, and updates the durable parent job counters.
+6. The extension waits locally for a random delay before claiming another
+   task. Every configured number of creators it uses the longer break.
+7. Existing frontend job-status polling reads the parent job and shows
+   progress, creator counts, post counts, and errors.
+
+Closing Chrome stops the extension worker but does not remove pending tasks.
+When Chrome starts again, the extension resumes after any persisted local wait
+and claims the next queued task. Closing only the application tab does not stop
+the extension because its background service worker belongs to Chrome.
 
 Chrome does not provide a truly invisible page with the user's normal session.
 The extension therefore uses an inactive background tab. It should not steal
@@ -47,14 +52,16 @@ focus, but the temporary tab can be visible in Chrome's tab strip.
 
 Backend integration is in `backend/app/extension_scraping.py`, with extension
 routes in `backend/app/api/main.py`. The active async job functions in
-`backend/app/api/services.py` explicitly use the extension transport. Existing
-direct Playwright functions are unchanged and remain callable by their legacy
-endpoints.
+`backend/app/api/services.py` create and process the durable extension queue.
+Existing direct Playwright functions are unchanged and remain callable by
+their legacy endpoints.
 
 ## FastAPI Extension Endpoints
 
 - `POST /extension/heartbeat`: records a connected extension instance.
 - `GET /extension/tasks/next`: heartbeat plus claim-next-task operation.
+- `POST /extension/tasks/{task_id}/lease`: renews the active task lease while a
+  LinkedIn page is still being scraped.
 - `POST /extension/tasks/{task_id}/result`: reports extracted data or an error.
 - `GET /extension/status`: reports connection and queued/active task counts.
 
@@ -98,14 +105,19 @@ click the extension's reload icon.
 
 ```text
 SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS=0
-SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS=240
-EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS=300
+SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS=120
+SCRAPE_LONG_BREAK_EVERY_CREATORS=10
+SCRAPE_LONG_BREAK_MIN_SECONDS=240
+SCRAPE_LONG_BREAK_MAX_SECONDS=420
 EXTENSION_SCRAPE_TASK_LEASE_SECONDS=120
 EXTENSION_API_TOKEN=
 ```
 
-The default delay selects a new value from 0 through 240 seconds for every
-creator. Restart FastAPI after changing environment values.
+The extension selects a new 0-120 second delay after ordinary creators. After
+each group of 10, except the final creator, it selects a 240-420 second break.
+These values are copied into each task when the parent job is created, so
+changing them requires restarting FastAPI and applies to newly created jobs.
+The extension stores its next poll timestamp in Chrome local storage.
 
 ## Data Notes
 
@@ -178,7 +190,9 @@ fields.
 - LinkedIn DOM changes can require updates to `content.js`; extraction uses
   stable URLs, labels, text, and nesting where possible instead of hashed CSS
   classes.
-- Extension tasks and scrape-job state are currently process-local. Restarting
-  FastAPI while a job is running loses that job. Scraping remains a local
-  workflow; the deployed Lambda continues to serve API/data operations with
-  scraping disabled.
+- Extension tasks and parent scrape jobs are durable DynamoDB records. A Lambda
+  invocation only claims or processes one task request; it does not remain
+  active during Chrome scraping or extension-side delays.
+- If a claimed extension task is interrupted, its renewable lease expires and
+  makes it claimable again. Result processing is idempotent for an already
+  processed task.

@@ -36,6 +36,7 @@ from app.api.schemas import (
     DmActionRequest,
     ExtensionHeartbeatRequest,
     ExtensionStatusResponse,
+    ExtensionTaskLeaseRequest,
     ExtensionTaskPollResponse,
     ExtensionTaskResultRequest,
     GenerateCommentRequest,
@@ -101,6 +102,7 @@ from app.api.services import (
     modify_comment,
     modify_post,
     preview_creators_from_file,
+    process_extension_scrape_task,
     scrape_creator_profile_details,
     scrape_creators_recent_24h,
     scrape_linkedin_post_engagement_service,
@@ -140,6 +142,7 @@ from app.extension_scraping import (
     complete_extension_task,
     extension_status,
     heartbeat_extension,
+    renew_extension_task_lease,
 )
 from app.brainstorm_jobs import get_brainstorm_job, start_brainstorm_job
 from app.llms.llm import LLMConfig, test_provider_api_key
@@ -223,7 +226,7 @@ def complete_extension_task_endpoint(
 ) -> ExtensionStatusResponse:
     _require_extension_token(x_extension_token)
     try:
-        complete_extension_task(
+        task = complete_extension_task(
             task_id,
             payload.user_id,
             payload.extension_id,
@@ -231,6 +234,23 @@ def complete_extension_task_endpoint(
             payload.data,
             payload.error,
         )
+        process_extension_scrape_task(get_repository(), task)
+    except KeyError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ExtensionStatusResponse.model_validate(extension_status(payload.user_id))
+
+
+@app.post("/extension/tasks/{task_id}/lease", response_model=ExtensionStatusResponse)
+def renew_extension_task_lease_endpoint(
+    task_id: str,
+    payload: ExtensionTaskLeaseRequest,
+    x_extension_token: Annotated[str, Header()] = "",
+) -> ExtensionStatusResponse:
+    _require_extension_token(x_extension_token)
+    try:
+        renew_extension_task_lease(task_id, payload.user_id, payload.extension_id)
     except KeyError as exc:
         raise _not_found(exc) from exc
     except ValueError as exc:

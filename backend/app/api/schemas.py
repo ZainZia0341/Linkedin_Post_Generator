@@ -618,6 +618,11 @@ class ExtensionTaskResultRequest(BaseModel):
     error: str = ""
 
 
+class ExtensionTaskLeaseRequest(BaseModel):
+    extension_id: str
+    user_id: str = "test-user-1"
+
+
 class ExtensionTaskPollResponse(BaseModel):
     task: dict[str, Any] | None = None
 

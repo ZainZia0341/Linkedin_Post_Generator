@@ -10,6 +10,11 @@ from uuid import uuid4
 from app.config import (
     EXTENSION_SCRAPE_TASK_LEASE_SECONDS,
     EXTENSION_SCRAPE_TASK_TIMEOUT_SECONDS,
+    SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS,
+    SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
+    SCRAPE_LONG_BREAK_EVERY_CREATORS,
+    SCRAPE_LONG_BREAK_MAX_SECONDS,
+    SCRAPE_LONG_BREAK_MIN_SECONDS,
 )
 from app.db.dynamodb import get_repository
 
@@ -30,7 +35,7 @@ def _activity_urn(*values: Any) -> str:
     return ""
 
 
-def _normalize_extension_posts(data: Any, max_posts: int) -> list[dict[str, Any]]:
+def normalize_extension_posts(data: Any, max_posts: int) -> list[dict[str, Any]]:
     candidates = data if isinstance(data, list) else []
     posts: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -92,7 +97,15 @@ def claim_extension_task(user_id: str, extension_id: str, version: str = "") -> 
     heartbeat_extension(user_id, extension_id, version)
     repo = get_repository()
     now = time.time()
-    for task in repo.list_extension_tasks(user_id):
+    tasks = sorted(
+        repo.list_extension_tasks(user_id),
+        key=lambda item: (
+            str(item.get("created_at", "")),
+            int(item.get("ordinal") or 0),
+            str(item.get("task_id", "")),
+        ),
+    )
+    for task in tasks:
         status = str(task.get("status", ""))
         if status == "claimed" and float(task.get("lease_expires_epoch") or 0) <= now:
             status = "queued"
@@ -103,10 +116,27 @@ def claim_extension_task(user_id: str, extension_id: str, version: str = "") -> 
             "extension_id": extension_id,
             "claimed_at": _now(),
             "lease_expires_epoch": now + EXTENSION_SCRAPE_TASK_LEASE_SECONDS,
+            "attempts": int(task.get("attempts") or 0) + 1,
         })
         repo.put_extension_task(user_id, task)
         return {key: value for key, value in task.items() if key not in {"result", "error"}}
     return None
+
+
+def renew_extension_task_lease(task_id: str, user_id: str, extension_id: str) -> dict[str, Any]:
+    repo = get_repository()
+    task = repo.get_extension_task(user_id, task_id)
+    if not task:
+        raise KeyError(f"Extension scrape task not found: {task_id}")
+    if str(task.get("status", "")) != "claimed":
+        raise ValueError("This extension scrape task is not active.")
+    if str(task.get("extension_id", "")) != extension_id:
+        raise ValueError("This extension scrape task is claimed by another extension.")
+    task["lease_expires_epoch"] = time.time() + EXTENSION_SCRAPE_TASK_LEASE_SECONDS
+    task["lease_renewed_at"] = _now()
+    repo.put_extension_task(user_id, task)
+    heartbeat_extension(user_id, extension_id)
+    return task
 
 
 def complete_extension_task(
@@ -116,7 +146,7 @@ def complete_extension_task(
     status: str,
     data: Any = None,
     error: str = "",
-) -> None:
+) -> dict[str, Any]:
     repo = get_repository()
     task = repo.get_extension_task(user_id, task_id)
     if not task:
@@ -132,6 +162,51 @@ def complete_extension_task(
     })
     repo.put_extension_task(user_id, task)
     heartbeat_extension(user_id, extension_id)
+    return task
+
+
+def enqueue_extension_scrape_tasks(
+    *,
+    job_id: str,
+    job_type: str,
+    user_id: str,
+    creators: list[dict[str, Any]],
+    max_posts: int = 0,
+    window_hours: int = 24,
+) -> list[dict[str, Any]]:
+    scrape_type = "posts" if job_type == "creator_posts" else "profile"
+    total = len(creators)
+    tasks: list[dict[str, Any]] = []
+    repo = get_repository()
+    for ordinal, creator in enumerate(creators, start=1):
+        task = {
+            "task_id": f"{job_id}-{ordinal:05d}",
+            "job_id": job_id,
+            "job_type": job_type,
+            "scrape_type": scrape_type,
+            "user_id": user_id,
+            "creator_id": str(creator["creator_id"]),
+            "profile_url": str(creator["profile_url"]),
+            "max_posts": max_posts,
+            "window_hours": window_hours,
+            "ordinal": ordinal,
+            "total_creators": total,
+            "status": "queued",
+            "extension_id": "",
+            "created_at": _now(),
+            "lease_expires_epoch": 0.0,
+            "attempts": 0,
+            "result": None,
+            "error": "",
+            "delay_min_seconds": SCRAPE_INTER_CREATOR_DELAY_MIN_SECONDS,
+            "delay_max_seconds": SCRAPE_INTER_CREATOR_DELAY_MAX_SECONDS,
+            "long_break_every_creators": SCRAPE_LONG_BREAK_EVERY_CREATORS,
+            "long_break_min_seconds": SCRAPE_LONG_BREAK_MIN_SECONDS,
+            "long_break_max_seconds": SCRAPE_LONG_BREAK_MAX_SECONDS,
+        }
+        repo.put_extension_task(user_id, task)
+        tasks.append(task)
+    return tasks
 
 
 def request_extension_scrape(
@@ -182,7 +257,7 @@ def request_extension_scrape(
     if status != "succeeded":
         raise RuntimeError(error or "Chrome extension scrape failed.")
     if scrape_type == "posts":
-        return _normalize_extension_posts(data, max_posts=max(1, max_posts))
+        return normalize_extension_posts(data, max_posts=max(1, max_posts))
     if not isinstance(data, dict):
         raise RuntimeError("Chrome extension returned invalid profile details.")
     normalized = dict(data)

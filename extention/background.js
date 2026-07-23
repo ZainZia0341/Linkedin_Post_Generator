@@ -6,7 +6,9 @@ const DEFAULT_SETTINGS = {
   extensionId: "",
   lastError: "",
   lastTaskAt: "",
-  lastHeartbeatAt: ""
+  lastHeartbeatAt: "",
+  nextPollAt: 0,
+  lastWaitReason: ""
 };
 
 const POLL_ALARM = "ai-spark-extension-poll";
@@ -168,12 +170,61 @@ async function reportTask(settings, task, status, data = null, error = "") {
   });
 }
 
+async function renewTaskLease(settings, task) {
+  await apiFetch(settings, `/extension/tasks/${encodeURIComponent(task.task_id)}/lease`, {
+    method: "POST",
+    body: JSON.stringify({
+      extension_id: settings.extensionId,
+      user_id: settings.userId
+    })
+  });
+}
+
+function randomSeconds(minimum, maximum) {
+  const min = Math.max(0, Math.floor(Number(minimum) || 0));
+  const max = Math.max(min, Math.floor(Number(maximum) || min));
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function waitPolicy(task) {
+  const ordinal = Math.max(1, Number(task.ordinal) || 1);
+  const total = Math.max(ordinal, Number(task.total_creators) || ordinal);
+  const every = Math.max(0, Number(task.long_break_every_creators) || 0);
+  const isLongBreak = every > 0 && ordinal % every === 0 && ordinal < total;
+  if (isLongBreak) {
+    return {
+      seconds: randomSeconds(task.long_break_min_seconds, task.long_break_max_seconds),
+      reason: `Long break after ${ordinal} of ${total} creators`
+    };
+  }
+  return {
+    seconds: randomSeconds(task.delay_min_seconds, task.delay_max_seconds),
+    reason: `Creator delay after ${ordinal} of ${total}`
+  };
+}
+
+async function applyTaskWait(task) {
+  const wait = waitPolicy(task);
+  const nextPollAt = Date.now() + wait.seconds * 1000;
+  await updateState({ nextPollAt, lastWaitReason: wait.reason });
+  return wait.seconds * 1000;
+}
+
 async function pollBackend() {
   if (polling) return;
   polling = true;
+  let nextDelayMs = 3000;
   try {
     const settings = await getSettings();
     if (!settings.enabled) return;
+    const remainingWait = Number(settings.nextPollAt || 0) - Date.now();
+    if (remainingWait > 0) {
+      nextDelayMs = remainingWait;
+      return;
+    }
+    if (settings.nextPollAt) {
+      await updateState({ nextPollAt: 0, lastWaitReason: "" });
+    }
     const query = new URLSearchParams({
       extension_id: settings.extensionId,
       user_id: settings.userId,
@@ -184,6 +235,10 @@ async function pollBackend() {
     if (!response.task) return;
 
     const task = response.task;
+    const leaseTimer = setInterval(
+      () => renewTaskLease(settings, task).catch(() => undefined),
+      30000
+    );
     try {
       const data = await executeTask(task);
       await reportTask(settings, task, "succeeded", data);
@@ -192,19 +247,22 @@ async function pollBackend() {
       const message = error instanceof Error ? error.message : String(error);
       await reportTask(settings, task, "failed", null, message).catch(() => undefined);
       await updateState({ lastTaskAt: new Date().toISOString(), lastError: message });
+    } finally {
+      clearInterval(leaseTimer);
     }
+    nextDelayMs = await applyTaskWait(task);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await updateState({ lastError: message });
   } finally {
     polling = false;
-    scheduleFastPoll();
+    schedulePoll(nextDelayMs);
   }
 }
 
-function scheduleFastPoll() {
+function schedulePoll(milliseconds = 3000) {
   if (pollTimer) clearTimeout(pollTimer);
-  pollTimer = setTimeout(() => pollBackend(), 3000);
+  pollTimer = setTimeout(() => pollBackend(), Math.max(1000, milliseconds));
 }
 
 chrome.runtime.onInstalled.addListener(async () => {

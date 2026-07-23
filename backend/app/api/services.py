@@ -79,7 +79,11 @@ from app.config import (
 )
 from app.creator_tracking import get_profile_id, normalize_linkedin_profile_url
 from app.db.dynamodb import DynamoRepository
-from app.extension_scraping import request_extension_scrape
+from app.extension_scraping import (
+    enqueue_extension_scrape_tasks,
+    normalize_extension_posts,
+    request_extension_scrape,
+)
 from app.graph_state import run_post_chat_edit, run_post_generation
 from app.langchain_deep_search import research_trending_topics
 from app.linkedin_post_actions import reply_to_comment, send_connection_request, send_dm
@@ -1488,6 +1492,18 @@ def _target_creator_count(
     return len(creators)
 
 
+def _target_creators(
+    repo: DynamoRepository,
+    user_id: str,
+    creator_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    creators = repo.list_creators(user_id, limit=CREATOR_IMPORT_EXISTING_LIMIT)
+    if creator_ids:
+        creator_id_set = set(creator_ids)
+        creators = [creator for creator in creators if creator["creator_id"] in creator_id_set]
+    return creators
+
+
 def _job_response(record: dict[str, Any]) -> ScrapeJobStatusResponse:
     return ScrapeJobStatusResponse.model_validate(record)
 
@@ -1600,10 +1616,202 @@ def _create_scrape_job(
     return _job_start_response(record)
 
 
+def _create_extension_scrape_job(
+    repo: DynamoRepository,
+    *,
+    user_id: str,
+    job_type: str,
+    creators: list[dict[str, Any]],
+    max_posts: int = 0,
+    window_hours: int = 24,
+) -> ScrapeJobStartResponse:
+    require_user(repo, user_id)
+    timestamp = now_iso()
+    job_id = f"SCRAPE-{job_type}-{uuid4()}"
+    total_creators = len(creators)
+    record = {
+        "job_id": job_id,
+        "job_type": job_type,
+        "user_id": user_id,
+        "status": "running" if total_creators else "succeeded",
+        "created_at": timestamp,
+        "started_at": timestamp,
+        "updated_at": timestamp,
+        "completed_at": timestamp if not total_creators else "",
+        "total_creators": total_creators,
+        "scraped_creators": 0,
+        "total_posts": 0,
+        "scraped_profiles": 0,
+        "newly_saved_count": 0,
+        "current_creator_id": "",
+        "message": (
+            f"Waiting for the Chrome extension to scrape {total_creators} creator"
+            f"{'' if total_creators == 1 else 's'}."
+            if total_creators
+            else "No creators matched the request."
+        ),
+        "errors": [],
+        "result": {},
+    }
+    _save_scrape_job(repo, record)
+    enqueue_extension_scrape_tasks(
+        job_id=job_id,
+        job_type=job_type,
+        user_id=user_id,
+        creators=creators,
+        max_posts=max_posts,
+        window_hours=window_hours,
+    )
+    return _job_start_response(record)
+
+
+def process_extension_scrape_task(
+    repo: DynamoRepository,
+    task: dict[str, Any],
+) -> dict[str, Any]:
+    user_id = str(task["user_id"])
+    job_id = str(task.get("job_id", ""))
+    if not job_id:
+        return task
+    if task.get("processed_at"):
+        return task
+
+    job = repo.get_job(user_id, job_id)
+    if not job:
+        raise KeyError(f"Scrape job not found: {job_id}")
+    creator_id = str(task.get("creator_id", ""))
+    creator = repo.get_creator(user_id, creator_id)
+    if not creator:
+        raise KeyError(f"Creator not found: {creator_id}")
+
+    timestamp = now_iso()
+    errors = list(job.get("errors") or [])
+    posts_found = 0
+    profiles_found = 0
+    newly_saved = 0
+    failure = str(task.get("error", "")).strip() if task.get("status") == "failed" else ""
+
+    if not failure and task.get("scrape_type") == "posts":
+        posts = normalize_extension_posts(
+            task.get("result"),
+            max_posts=max(1, int(task.get("max_posts") or 1)),
+        )
+        creator_new_count = 0
+        for post in posts:
+            if not _is_post_inside_window(post, int(task.get("window_hours") or 24)):
+                continue
+            probe = _normalize_activity(user_id, creator, post, is_new=False)
+            existing = repo.get_activity(user_id, creator_id, probe["post_id"])
+            activity = _normalize_activity(user_id, creator, post, is_new=existing is None)
+            if existing and existing.get("engagement"):
+                activity["engagement"] = existing["engagement"]
+            repo.put_activity(activity)
+            if existing is None:
+                creator_new_count += 1
+                newly_saved += 1
+            posts_found += 1
+        creator["last_checked_at"] = timestamp
+        creator["seen_count"] = len(repo.list_creator_activities(user_id, creator_id, API_LIST_LIMIT))
+        creator["new_count"] = creator_new_count
+        creator["updated_at"] = timestamp
+        repo.put_creator(creator)
+    elif not failure and task.get("scrape_type") == "profile":
+        raw_details = task.get("result")
+        if not isinstance(raw_details, dict):
+            failure = "Chrome extension returned invalid profile details."
+        elif raw_details.get("error"):
+            failure = str(raw_details.get("message") or raw_details.get("error"))
+        else:
+            details = _normalize_profile_details({**raw_details, "source": "extension"})
+            creator["profile_details"] = details
+            creator["profile_details_checked_at"] = details.get("fetched_at") or timestamp
+            if details.get("name"):
+                creator["display_name"] = details["name"]
+            creator["updated_at"] = timestamp
+            repo.put_creator(creator)
+            profiles_found = 1
+
+    if failure:
+        errors.append({"creator_id": creator_id, "message": failure})
+        if task.get("scrape_type") == "posts":
+            creator["last_checked_at"] = timestamp
+        else:
+            creator["profile_details_checked_at"] = timestamp
+        creator["updated_at"] = timestamp
+        repo.put_creator(creator)
+
+    completed = int(job.get("scraped_creators") or 0) + 1
+    total = int(job.get("total_creators") or 0)
+    total_posts = int(job.get("total_posts") or 0) + posts_found
+    total_profiles = int(job.get("scraped_profiles") or 0) + profiles_found
+    total_new = int(job.get("newly_saved_count") or 0) + newly_saved
+    is_complete = completed >= total
+    job.update({
+        "status": "succeeded" if is_complete else "running",
+        "scraped_creators": completed,
+        "total_posts": total_posts,
+        "scraped_profiles": total_profiles,
+        "newly_saved_count": total_new,
+        "current_creator_id": creator_id,
+        "errors": errors,
+        "updated_at": timestamp,
+        "completed_at": timestamp if is_complete else "",
+        "message": (
+            f"Completed {completed} creator scrape{'' if completed == 1 else 's'}; "
+            f"{total_posts} posts found."
+            if task.get("scrape_type") == "posts" and is_complete
+            else (
+                f"Completed {completed} profile scrape{'' if completed == 1 else 's'}; "
+                f"{total_profiles} profiles saved."
+                if is_complete
+                else f"Extension scraped {completed} of {total} creators."
+            )
+        ),
+    })
+    if is_complete:
+        checked_ids = [
+            str(item.get("creator_id", ""))
+            for item in repo.list_extension_tasks(user_id)
+            if item.get("job_id") == job_id
+        ]
+        if task.get("scrape_type") == "posts":
+            _save_creator_post_scrape_metrics(repo, user_id, total_posts, total_new)
+            job["result"] = {
+                "user_id": user_id,
+                "checked_creator_ids": checked_ids,
+                "window_hours": int(task.get("window_hours") or 24),
+                "activities": [],
+                "errors": errors,
+            }
+        else:
+            job["result"] = {
+                "user_id": user_id,
+                "checked_creator_ids": checked_ids,
+                "profiles": [],
+                "errors": errors,
+            }
+    _save_scrape_job(repo, job)
+    task["processed_at"] = timestamp
+    task["status"] = "processed"
+    task["result"] = None
+    repo.put_extension_task(user_id, task)
+    return task
+
+
 def start_recent_scrape_job(
     repo: DynamoRepository,
     request: RecentScrapeCreatorsRequest,
 ) -> ScrapeJobStartResponse:
+    if SCRAPE_ENGINE == "extension":
+        prune_old_activities(repo, request.user_id)
+        return _create_extension_scrape_job(
+            repo,
+            user_id=request.user_id,
+            job_type="creator_posts",
+            creators=_target_creators(repo, request.user_id, request.creator_ids),
+            max_posts=request.max_posts,
+            window_hours=request.window_hours,
+        )
     total_creators = _target_creator_count(repo, request.user_id, request.creator_ids)
 
     def run(job_id: str) -> None:
@@ -1651,6 +1859,13 @@ def start_profile_scrape_job(
     repo: DynamoRepository,
     request: ScrapeCreatorProfilesRequest,
 ) -> ScrapeJobStartResponse:
+    if SCRAPE_ENGINE == "extension":
+        return _create_extension_scrape_job(
+            repo,
+            user_id=request.user_id,
+            job_type="creator_profiles",
+            creators=_target_creators(repo, request.user_id, request.creator_ids),
+        )
     total_creators = _target_creator_count(repo, request.user_id, request.creator_ids)
 
     def run(job_id: str) -> None:
