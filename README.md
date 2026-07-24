@@ -295,3 +295,9 @@ $env:AWS_DEFAULT_REGION="us-east-2"
 
 aws ecr get-login-password --region us-east-2 |
 docker login --username AWS --password-stdin 507881105575.dkr.ecr.us-east-2.amazonaws.com
+
+
+
+$env:DOCKER_DEFAULT_PLATFORM="linux/amd64"
+$env:BUILDX_NO_DEFAULT_ATTESTATIONS="1"
+serverless deploy --stage dev --region us-east-2
